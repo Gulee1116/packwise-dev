@@ -32,6 +32,7 @@ The `.gitignore` is configured to exclude the local modpack sample directory, ru
 - Connector-agent protocol draft exists in `docs/protocol/CONNECTOR_AGENT_PROTOCOL.md`.
 - Python agent harness exists in `apps/agent`.
 - NeoForge connector skeleton exists in `connectors/neoforge`.
+- CloudBase has been selected as the preferred public API deployment target: the Minecraft server connector should push authoritative state outbound to CloudBase, while clients query CloudBase directly.
 - Java protocol/model tests can run without launching Minecraft.
 - Python harness tests can run without launching Minecraft.
 - Static FTB Quests parsing exists for chapter/quest/task/reward/dependency skeletons.
@@ -43,11 +44,13 @@ The `.gitignore` is configured to exclude the local modpack sample directory, ru
 - Static recipe probing can produce useful preloaded indexes, but KubeJS execution, datapack priority, tag expansion, mod conditions, duplicate recipe IDs, and runtime-only registrations still require runtime reconciliation.
 - The NeoForge connector has a buildable skeleton and protocol upload pieces, but in-game commands and full runtime recipe/tag/registry dumps are still future work.
 - The current Python service stores state in memory; durable server/player memory is not implemented yet.
+- CloudBase functions must be treated as stateless request handlers. Do not rely on in-process `AgentService` dictionaries for durable state after deployment; persist latest snapshots, manifests, logs, and large dump objects in CloudBase DB/Storage.
 
 ## Suggested Next Steps
 
-1. Turn the one-off recipe probe into an `inspect-recipes` command with source and confidence annotations.
-2. Add duplicate recipe ID and datapack priority handling.
-3. Add targeted KubeJS extractors for common recipe/removal helper patterns.
+1. Define the minimum CloudBase schema for `server_snapshots`, `runtime_dumps`, token metadata, and query logs.
+2. Define the server connector snapshot push payload and token authentication boundary.
+3. Split the Python harness service boundary so the same protocol logic can run behind stateless CloudBase HTTP handlers.
 4. Add a NeoForge runtime recipe/tag dump and compare it against static preload output.
-5. Keep public fixtures tiny and synthetic unless third-party redistribution rights are explicit.
+5. Turn the one-off recipe probe into an `inspect-recipes` command with source and confidence annotations.
+6. Keep public fixtures tiny and synthetic unless third-party redistribution rights are explicit.

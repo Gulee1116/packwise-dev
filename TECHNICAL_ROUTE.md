@@ -11,6 +11,7 @@
 - Agent 需要以整合包实际文件为准，通用互联网资料只能作为补充。
 - Python 可以作为早期 harness 和 agent service 实现语言，但不能成为玩家或服主安装 mod 时的运行前提。
 - Minecraft 侧连接器必须按 mod 生态分发，优先使用 JVM 语言实现。
+- 公网发布优先采用 CloudBase HTTP API + 数据库/存储，而不是要求服主在本机或 Minecraft 服务器上暴露入站端口。
 
 ## 分发与运行时兼容性
 
@@ -107,6 +108,64 @@ zip 内容概况：
 
 ## 推荐架构
 
+第一版公网托管优先采用 CloudBase 单向同步架构：
+
+```text
+Minecraft Server
+  Server Connector Mod
+  - authoritative runtime state
+  - periodic/event-driven snapshot push
+  - runtime dumps: mods/items/recipes/tags/quests/progress
+        |
+        | HTTPS POST
+        v
+CloudBase HTTP API
+  - server snapshot ingest
+  - query API
+  - auth/rate limit boundary
+  - RAG / KG lookup
+  - model orchestration inside a single request
+        |
+        v
+CloudBase DB / Storage
+  - server registry and tokens
+  - latest server/player/team snapshots
+  - runtime dump manifests
+  - large NDJSON dump objects
+  - prebuilt recipe/quest/KG indexes
+        ^
+        |
+Client Connector Mod / Web / curl
+  - ask/query requests
+  - no privileged server secret
+```
+
+架构边界：
+
+- MC 服务端 connector 是游戏状态真源。玩家进度、团队进度、FTB Quests、GameStages、advancements、背包、存储摘要和 runtime dump 都应由服务端主动 push。
+- CloudBase 函数进程是无状态编排层。单次请求内可以保留 scratchpad、tool results 和模型中间状态；跨请求状态必须写入 CloudBase DB/Storage。
+- CloudBase 不主动反连 MC 服务器。第一版避免要求 MC 服务器有公网入站能力或 tunnel。
+- 客户端 mod 只负责发起 query 和展示答案。客户端提交的 player/team/context 均视为不可信提示，权威状态以服务端最近 push 的 snapshot 为准。
+- 服务端 push 使用 `server_push_token`，客户端 query 使用独立的 `client_query_token` 或匿名限流；不要把服务端密钥放进客户端 mod。
+
+典型请求流程：
+
+1. 服务端 mod 每 30-60 秒 push 一次 latest snapshot，并在任务完成、玩家加入/退出、阶段变化等事件后额外 push。
+2. 大型 runtime dump 先提交 manifest，再把 NDJSON section 写入对象存储或分块上传。
+3. 客户端调用 `/v1/query/ask`。
+4. CloudBase 读取最新 server/player/team snapshot，检索 recipe/quest/KG index，必要时在本次函数调用内多轮调用模型。
+5. CloudBase 返回 `answer.packet`，可选写入 query log 或压缩后的 conversation summary。
+
+需要避免的形态：
+
+- 把 CloudBase 函数内存当长期 `AgentService` 状态使用。
+- 每个 agent step 都写 DB。第一版应把 agent trace 保持在单次请求内存里，只持久化 latest snapshot、索引、必要 query log 和可选会话摘要。
+- 要求 CloudBase 实时转发请求到 MC 服务器；这会重新引入入站网络和可用性问题。
+
+本地 Python agent harness 仍保留为协议和索引实验工具，但不再作为默认公网部署形态。
+
+原始离线/本地架构仍用于 core 和 harness 开发：
+
 ```text
 Modpack zip / mrpack
         |
@@ -178,6 +237,20 @@ Players in server chat
 - `explain_recipe(item_id)`
 - `explain_blocker(goal, current_state)`
 
+CloudBase 目标形态下，`packwise-agent` 应拆成无状态 HTTP handlers：
+
+- `POST /v1/servers/{server_id}/snapshots/latest`：服务端 connector 上传最新状态。
+- `POST /v1/connectors/{connector_id}/runtime-dumps`：注册 runtime dump manifest。
+- `POST /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/sections/{section_name}`：上传或登记 section 内容。
+- `POST /v1/query/ask`：客户端或游戏内 query 入口。
+- `GET /v1/health`：健康检查。
+
+持久化优先级：
+
+1. CloudBase 文档型数据库：server registry、latest snapshot、manifest、token metadata、query log 摘要。
+2. CloudBase 云存储：大型 NDJSON dump、预构建 SQLite/JSON index artifact。
+3. 单次函数内存：本次 RAG 结果、agent scratchpad、模型工具调用结果。
+
 ### `packwise-connector`
 
 Minecraft 连接器和 runtime dumper。
@@ -196,6 +269,7 @@ Minecraft 连接器和 runtime dumper。
 - 使用 Java/Kotlin 等 JVM 生态语言，按普通 mod 方式分发。
 - 不依赖系统 Python。
 - 与 agent service 之间只通过协议通信。
+- CloudBase 部署下只要求服务端 connector 主动向公网 HTTP API 发起出站请求，不要求 Minecraft 服务器开放入站 HTTP 端口。
 
 建议拆分：
 
@@ -382,6 +456,15 @@ Web 控制台。
 - 同步玩家背包和 advancement。
 - Agent 能结合当前玩家状态回答。
 
+### Milestone 3.5：CloudBase 公网 API MVP
+
+- 建立 CloudBase HTTP API 部署形态。
+- 建立 `server_snapshots` latest-state 存储。
+- 服务端 connector 使用 server token 主动 push snapshot。
+- 客户端 connector 或 `curl` 调用 `/v1/query/ask`。
+- Query handler 每次请求读取最新 snapshot + 静态/KG 索引，再返回 answer packet。
+- 默认不持久化完整 agent trace，只记录必要 query log 和错误诊断。
+
 ### Milestone 4：多人进度
 
 - 支持团队级 progress snapshot。
@@ -415,19 +498,20 @@ Packwise/
 ## 待决策
 
 - 第一版 connector 优先 Fabric、Forge 还是 NeoForge。
-- 第一版 agent service 是只提供 CLI/API，还是同时提供打包后的本地桌面服务。
+- 第一版公网 agent service 优先 CloudBase HTTP API；本地 Python agent 作为 harness，不作为默认发布形态。
 - 是否先支持 `.mrpack`，还是先支持当前手上的原始整合包目录。
 - FTB Quests 目标版本和文件格式。
 - 是否需要 Discord/飞书等外部聊天入口。
+- CloudBase DB schema、云存储对象路径和 token/限流策略。
 
 ## 近期下一步
 
-1. 建立 Python-first 最小 CLI：`packwise inspect <path>`。
-2. 支持两种输入：CurseForge manifest 包目录、PCL2 已安装实例目录。
-3. 先输出 pack identity、loader、Minecraft 版本、实际 mod jar 数、FTB Quests 章节数、KubeJS 脚本数、datapack recipe 数。
-4. 加上隐私/缓存目录 ignore 规则，默认不读取 logs、saves、local、ftbteambases、options.txt。
-5. 设计 connector/agent 的语言无关协议草案。
-6. 设计 NeoForge runtime dump 的最小字段：registries、tags、recipes、advancements、FTB Quests、team/player stage。
+1. 设计 CloudBase `server_snapshots`、`runtime_dumps`、`query_logs` 的最小 schema。
+2. 把现有 Python `AgentService` 的内存态接口拆成可迁移的无状态 handler/service 边界。
+3. 定义服务端 connector 的 snapshot push payload 和 token 认证方式。
+4. 定义客户端 query payload，明确客户端上下文只作为非权威 hint。
+5. 继续补 NeoForge runtime dump 字段：registries、tags、recipes、advancements、FTB Quests、team/player stage。
+6. 建立 CloudBase 部署脚手架后，用默认域名先跑通 `curl /v1/health` 和 `/v1/query/ask`。
 
 ## 当前实现进度
 
@@ -438,6 +522,7 @@ Packwise/
 - 已实现 Java `mods` section NDJSON 生成、`count` / `sha256` 计算、manifest + section 上传编排。
 - 已实现弱依赖 NeoForge `ModList` 的反射适配层，输出 Packwise 自有 `ModSnapshot`。
 - 已实现轻量 Python agent service/harness，支持 hello、runtime dump manifest、runtime dump section、`mods` section 解析索引、ask 和可选 DeepSeek/OpenAI-compatible 调用，并用 `scripts/test-agent.ps1` 验证。
+- 已确定公网部署方向：CloudBase HTTP API + DB/Storage，MC 服务端 connector 单向 push 权威状态，客户端 connector/query 入口只调用 CloudBase；本地 Python agent 保留为协议 harness。
 - 已实现不启动游戏的静态 inspect harness：`python -m packwise_agent inspect <installed-instance>`。它只读 PCL2 已安装实例，输出 pack/loader 身份、mod jar 数、FTB Quests/KubeJS/datapack/defaultconfigs 计数、安全样本和默认忽略的 runtime/private 目录。
 - 已实现不启动游戏的 FTB Quests SNBT 解析 harness：`python -m packwise_agent inspect-quests <installed-instance>`。当前抽取 chapter、quest、dependency、task、reward、item/stage 骨架；在 StoneBlock 4 上解析到 `22` 章、`939` 个 quest、`1603` 个 task、`1417` 个 reward、`855` 条依赖边、`116` 个 stage。
 - Agent 接收 runtime dump section 时会校验 manifest 中声明的 `count` 与 `sha256`。
