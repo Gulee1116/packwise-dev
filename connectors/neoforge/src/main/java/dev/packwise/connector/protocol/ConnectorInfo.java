@@ -1,0 +1,28 @@
+package dev.packwise.connector.protocol;
+
+import java.util.List;
+import java.util.Objects;
+
+public record ConnectorInfo(
+        String id,
+        ConnectorSide side,
+        String loader,
+        String loaderVersion,
+        String minecraftVersion,
+        String packId,
+        String packName,
+        String packVersion,
+        List<String> capabilities) {
+
+    public ConnectorInfo {
+        Objects.requireNonNull(id, "id");
+        Objects.requireNonNull(side, "side");
+        Objects.requireNonNull(loader, "loader");
+        Objects.requireNonNull(loaderVersion, "loaderVersion");
+        Objects.requireNonNull(minecraftVersion, "minecraftVersion");
+        Objects.requireNonNull(packId, "packId");
+        Objects.requireNonNull(packName, "packName");
+        Objects.requireNonNull(packVersion, "packVersion");
+        capabilities = List.copyOf(Objects.requireNonNull(capabilities, "capabilities"));
+    }
+}

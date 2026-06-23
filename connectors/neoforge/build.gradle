@@ -1,0 +1,62 @@
+plugins {
+    id 'java'
+    id 'net.neoforged.moddev' version '1.0.21'
+}
+
+group = mod_group_id
+version = mod_version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    def localMinecraftLibraries = []
+    def configuredMinecraftLibraries = System.getenv('PACKWISE_MINECRAFT_LIBRARIES')
+    if (configuredMinecraftLibraries) {
+        localMinecraftLibraries.add(file(configuredMinecraftLibraries))
+    }
+    def appData = System.getenv('APPDATA')
+    if (appData) {
+        localMinecraftLibraries.add(file("${appData}/.minecraft/libraries"))
+    }
+    def localMinecraftLibrariesDir = localMinecraftLibraries.find { it.exists() }
+    if (localMinecraftLibrariesDir != null) {
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = 'PackwiseLocalMinecraftLibraries'
+                    url = localMinecraftLibrariesDir.toURI()
+                    metadataSources {
+                        artifact()
+                    }
+                }
+            }
+            filter {
+                includeGroupByRegex 'org\\.lwjgl.*'
+            }
+        }
+    }
+}
+
+neoForge {
+    version = neo_version
+
+    runs {
+        server {
+            server()
+        }
+    }
+
+    mods {
+        packwise_connector {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

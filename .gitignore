@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Java / Gradle
+.gradle/
+build/
+out/
+*.class
+
+# IDE
+.idea/
+.vscode/
+
+# Packwise local runtime artifacts
+artifacts/
+runtime-dumps/
+*.sqlite
+*.sqlite3
+
+# Local-only Codex/session config
+.codex/
+
+# Local modpack samples and third-party archives.
+# Keep public repos source-only unless a fixture is explicitly redistributable.
+Raw-stoneblock-modpack/
+local-modpacks/
+fixtures/local/
+*.zip
+*.mrpack
+*.jar
+!connectors/neoforge/gradle/wrapper/gradle-wrapper.jar
+
+# Logs and local secrets
+*.log
+.env
+.env.*

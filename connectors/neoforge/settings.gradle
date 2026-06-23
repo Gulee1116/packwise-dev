@@ -1,0 +1,29 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url = 'https://maven.neoforged.net/releases' }
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+    repositories {
+        def localMinecraftLibraries = []
+        def configuredMinecraftLibraries = System.getenv('PACKWISE_MINECRAFT_LIBRARIES')
+        if (configuredMinecraftLibraries) {
+            localMinecraftLibraries.add(file(configuredMinecraftLibraries))
+        }
+        def appData = System.getenv('APPDATA')
+        if (appData) {
+            localMinecraftLibraries.add(file("${appData}/.minecraft/libraries"))
+        }
+        localMinecraftLibraries.findAll { it.exists() }.each { librariesDir ->
+            maven { url = librariesDir.toURI() }
+        }
+        maven { url = 'https://maven.neoforged.net/releases' }
+        maven { url = 'https://libraries.minecraft.net' }
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'packwise-neoforge-connector'
