@@ -7,6 +7,7 @@ import dev.packwise.connector.protocol.ModsSectionDumper;
 import dev.packwise.connector.protocol.NdjsonSectionDumper;
 import dev.packwise.connector.protocol.RuntimeDumpContent;
 import dev.packwise.connector.protocol.RuntimeSectionNames;
+import net.minecraft.advancements.Advancement;
 import net.minecraft.core.Holder;
 import net.minecraft.core.HolderSet;
 import net.minecraft.core.Registry;
@@ -19,11 +20,10 @@ import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.Recipe;
 import org.slf4j.Logger;
 
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -94,13 +94,14 @@ public final class ForgeRuntimeDumpCollector {
     private static RuntimeDumpContent dumpRecipes(MinecraftServer server) {
         List<String> lines = new ArrayList<>();
         int skipped = 0;
-        for (Object recipeEntry : server.getRecipeManager().getRecipes()) {
-            String recipeId = "unknown";
+        List<ResourceLocation> recipeIds = server.getRecipeManager().getRecipeIds()
+                .sorted(Comparator.comparing(ResourceLocation::toString))
+                .toList();
+        for (ResourceLocation recipeId : recipeIds) {
             try {
-                recipeId = firstString(invokeOptional(recipeEntry, "id"), "unknown");
-                String line = recipeLine(server, recipeEntry);
-                if (line != null) {
-                    lines.add(line);
+                Optional<? extends Recipe<?>> recipe = server.getRecipeManager().byKey(recipeId);
+                if (recipe.isPresent()) {
+                    lines.add(recipeLine(server, recipeId, recipe.get()));
                 }
             } catch (RuntimeException error) {
                 skipped++;
@@ -114,19 +115,13 @@ public final class ForgeRuntimeDumpCollector {
         return NdjsonSectionDumper.dump(RuntimeSectionNames.RECIPES, lines);
     }
 
-    private static String recipeLine(MinecraftServer server, Object recipeEntry) {
-        Object holderRecipe = invokeOptional(recipeEntry, "value");
-        Object recipeObject = holderRecipe == null ? recipeEntry : holderRecipe;
-        if (!(recipeObject instanceof Recipe<?> recipe)) {
-            return null;
-        }
-        String recipeId = firstString(invokeOptional(recipeEntry, "id"), invokeOptional(recipe, "getId"));
+    private static String recipeLine(MinecraftServer server, ResourceLocation recipeId, Recipe<?> recipe) {
         ResourceLocation recipeType = BuiltInRegistries.RECIPE_TYPE.getKey(recipe.getType());
         ResourceLocation serializer = BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer());
         ItemStack result = recipe.getResultItem(server.registryAccess());
         ResourceLocation resultItem = result.isEmpty() ? null : BuiltInRegistries.ITEM.getKey(result.getItem());
         return "{"
-                + field("id", recipeId) + ","
+                + field("id", recipeId.toString()) + ","
                 + field("type", stringValue(recipeType)) + ","
                 + field("serializer", stringValue(serializer)) + ","
                 + field("result_item", stringValue(resultItem)) + ","
@@ -154,45 +149,14 @@ public final class ForgeRuntimeDumpCollector {
 
     private static RuntimeDumpContent dumpAdvancements(MinecraftServer server) {
         List<String> lines = new ArrayList<>();
-        for (Object advancement : server.getAdvancements().getAllAdvancements()) {
+        for (Advancement advancement : server.getAdvancements().getAllAdvancements()) {
             lines.add("{"
-                    + field("id", advancementId(advancement)) + ","
+                    + field("id", advancement.getId().toString()) + ","
                     + field("source", "runtime:server_advancements")
                     + "}");
         }
         lines.sort(String::compareTo);
         return NdjsonSectionDumper.dump(RuntimeSectionNames.ADVANCEMENTS, lines);
-    }
-
-    private static String advancementId(Object advancement) {
-        Object id = invokeOptional(advancement, "id");
-        if (id == null) {
-            id = invokeOptional(advancement, "getId");
-        }
-        return String.valueOf(id);
-    }
-
-    private static Object invokeOptional(Object target, String methodName) {
-        try {
-            Method method = target.getClass().getMethod(methodName);
-            return method.invoke(target);
-        } catch (NoSuchMethodException error) {
-            return null;
-        } catch (IllegalAccessException | InvocationTargetException error) {
-            throw new IllegalStateException("Failed to invoke " + methodName + " on " + target.getClass().getName(), error);
-        }
-    }
-
-    private static String firstString(Object... values) {
-        for (Object value : values) {
-            if (value != null) {
-                String text = String.valueOf(value);
-                if (!text.isBlank()) {
-                    return text;
-                }
-            }
-        }
-        return "unknown";
     }
 
     private static String field(String key, String value) {

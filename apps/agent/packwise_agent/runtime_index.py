@@ -161,6 +161,7 @@ class RuntimeQuest:
     chapter_id: Optional[str]
     title: Optional[str]
     dependencies: List[str]
+    dependency_types: Dict[str, str]
     task_item_ids: List[str]
     reward_item_ids: List[str]
     source: str
@@ -172,10 +173,20 @@ class RuntimeQuest:
             chapter_id=_optional_str(payload, "chapter_id"),
             title=_optional_str(payload, "title"),
             dependencies=_optional_str_list(payload, "dependencies"),
+            dependency_types=_optional_str_dict(payload, "dependency_types"),
             task_item_ids=_optional_str_list(payload, "task_item_ids"),
             reward_item_ids=_optional_str_list(payload, "reward_item_ids"),
             source=_optional_str(payload, "source") or "runtime",
         )
+
+    def quest_dependencies(self) -> List[str]:
+        if not self.dependency_types:
+            return list(self.dependencies)
+        return [
+            dependency
+            for dependency in self.dependencies
+            if self.dependency_types.get(dependency) == "quest"
+        ]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -183,6 +194,7 @@ class RuntimeQuest:
             "chapter_id": self.chapter_id,
             "title": self.title,
             "dependencies": list(self.dependencies),
+            "dependency_types": dict(self.dependency_types),
             "task_item_ids": list(self.task_item_ids),
             "reward_item_ids": list(self.reward_item_ids),
             "source": self.source,
@@ -445,7 +457,7 @@ def runtime_consistency_errors(runtime_index: RuntimePackIndex) -> List[str]:
             {
                 dependency
                 for quest in runtime_index.ftb_quests
-                for dependency in quest.dependencies
+                for dependency in quest.quest_dependencies()
                 if dependency not in quest_ids
             }
         )
@@ -553,6 +565,18 @@ def _optional_str_list(payload: Mapping[str, Any], key: str) -> List[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError(f"{key} must be a string list")
     return list(value)
+
+
+def _optional_str_dict(payload: Mapping[str, Any], key: str) -> Dict[str, str]:
+    value = payload.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(item_key, str) and isinstance(item_value, str)
+        for item_key, item_value in value.items()
+    ):
+        raise ValueError(f"{key} must be a string dictionary")
+    return dict(value)
 
 
 def _duplicate_value_errors(section_name: str, values: List[str]) -> List[str]:

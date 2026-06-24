@@ -87,7 +87,7 @@ python -m packwise_agent inspect-quests "<installed-instance>" --output ".\artif
 ./scripts/dev ask-local "<installed-instance>" --runtime-dir "runtime-dumps/dump_1" --item-id "minecraft:stone" --question "当前目标缺哪些前置机器/任务/材料？" --pretty
 ```
 
-`validate-dump --require-phase1` 会校验 manifest、section count/hash、Phase 1 section 是否齐全，并要求 `mods`、`items`、`blocks`、`fluids`、`tags`、`recipes`、`advancements` 全部非空；当 registry section 存在时，还会校验 recipes/tags 和 FTB quest item refs 引用的 runtime item/block/fluid 是否存在；当 optional progression section 存在时，还会校验 quest dependencies、completed quest refs 和 player stage refs 的一致性。`ask-local` 默认使用同样的 Phase 1 runtime 要求；仅探索不完整 dump 时可追加 `--allow-partial-runtime`。
+`validate-dump --require-phase1` 会校验 manifest、section count/hash、Phase 1 section 是否齐全，并要求 `mods`、`items`、`blocks`、`fluids`、`tags`、`recipes`、`advancements` 全部非空；当 registry section 存在时，还会校验 recipes/tags 和 FTB quest item refs 引用的 runtime item/block/fluid 是否存在；当 optional progression section 存在时，还会校验 typed quest dependencies、completed quest refs 和 player stage refs 的一致性。`ask-local` 默认使用同样的 Phase 1 runtime 要求；仅探索不完整 dump 时可追加 `--allow-partial-runtime`。
 
 Forge connector 的 `/packwise dump` 会在服务器工作目录下写出 `packwise-dumps/<dump_id>/manifest.json` 和各 section 的 `*.ndjson` 文件；配置 `PACKWISE_AGENT_URL` 时会同时上传给 agent。
 `import-dump` 会使用和 HTTP 上传一致的 AgentService manifest/section handler 导入本地 dump；带 `--instance` 时还会导入静态检查和任务书上下文，并返回同一内存态 service 构建出的 Packwise index 摘要。

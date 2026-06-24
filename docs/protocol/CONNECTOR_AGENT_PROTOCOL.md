@@ -380,7 +380,7 @@ Content-Type: application/x-ndjson
 示例：可选 `ftb_quests` section
 
 ```ndjson
-{"quest_id":"0000000000000002","chapter_id":"0000000000000001","title":"Getting Started","dependencies":[],"task_item_ids":["minecraft:stone"],"reward_item_ids":["minecraft:apple"],"source":"runtime:ftb_quests"}
+{"quest_id":"0000000000000002","chapter_id":"0000000000000001","title":"Getting Started","dependencies":[],"dependency_types":{},"task_item_ids":["minecraft:stone"],"reward_item_ids":["minecraft:apple"],"source":"runtime:ftb_quests"}
 ```
 
 示例：可选 `team_progress` / `player_progress` / `stages` section
@@ -435,7 +435,7 @@ GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/pack-index
 - `Content-Type` 必须与 manifest 中对应 section 的 `content_type` 一致。
 - section 非空行数必须与 manifest 中对应 section 的 `count` 一致。
 - section UTF-8 正文的 SHA-256 必须与 manifest 中对应 section 的 `sha256` 一致。
-- agent runtime consistency validation 会校验 duplicate IDs、recipe/tag/quest item registry refs、FTB quest dependencies、player/team completed quest refs，以及 player progress stage refs 和 `stages` section 的一致性；不完整 optional section 应暴露为 `runtime_consistency_errors`，不能静默参与高置信回答。
+- agent runtime consistency validation 会校验 duplicate IDs、recipe/tag/quest item registry refs、typed FTB quest dependencies、player/team completed quest refs，以及 player progress stage refs 和 `stages` section 的一致性；不完整 optional section 应暴露为 `runtime_consistency_errors`，不能静默参与高置信回答。
 
 ## Runtime Dump Queries
 

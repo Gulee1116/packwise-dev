@@ -753,10 +753,15 @@ def _next_runtime_quests(index: RuntimePackIndex, progress_scope: ProgressScope 
     ready = [
         quest
         for quest in open_quests
-        if not quest.dependencies or all(dependency in completed for dependency in quest.dependencies)
+        if _quest_dependencies_completed(quest, completed)
     ]
     candidates = ready or open_quests
     return sorted(candidates, key=lambda quest: (quest.chapter_id or "", quest.quest_id))[:5]
+
+
+def _quest_dependencies_completed(quest: RuntimeQuest, completed: set[str]) -> bool:
+    dependencies = quest.quest_dependencies()
+    return not dependencies or all(dependency in completed for dependency in dependencies)
 
 
 def _quest_completion_summary(

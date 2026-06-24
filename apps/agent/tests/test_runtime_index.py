@@ -36,7 +36,9 @@ class RuntimeIndexTest(unittest.TestCase):
 
     def test_parses_optional_progression_runtime_sections(self):
         quests = parse_ftb_quests_ndjson(
-            '{"quest_id":"quest_start","chapter_id":null,"title":"Start","dependencies":["root"],"task_item_ids":["minecraft:stone"],"reward_item_ids":[],"source":"runtime:ftb_quests"}\n'
+            '{"quest_id":"quest_start","chapter_id":null,"title":"Start",'
+            '"dependencies":["root"],"dependency_types":{"root":"quest"},'
+            '"task_item_ids":["minecraft:stone"],"reward_item_ids":[],"source":"runtime:ftb_quests"}\n'
         )
         player_progress = parse_progress_ndjson(
             '{"subject_type":"player","subject_id":"player-1","completed_quests":["quest_start"],"completed_advancements":["minecraft:story/mine_stone"],"stages":["stone_age"],"source":"runtime:ftb_quests","player_name":"DevPlayer","team_id":"team-1"}\n',
@@ -52,6 +54,8 @@ class RuntimeIndexTest(unittest.TestCase):
 
         self.assertEqual("quest_start", quests[0].quest_id)
         self.assertIsNone(quests[0].chapter_id)
+        self.assertEqual({"root": "quest"}, quests[0].dependency_types)
+        self.assertEqual(["root"], quests[0].quest_dependencies())
         self.assertEqual(["minecraft:stone"], quests[0].task_item_ids)
         self.assertEqual(["quest_start"], player_progress[0].completed_quests)
         self.assertEqual("DevPlayer", player_progress[0].player_name)
@@ -148,6 +152,26 @@ class RuntimeIndexTest(unittest.TestCase):
             "Team progress stages missing from stages section: team-1:team_stage",
             errors,
         )
+
+    def test_runtime_consistency_uses_typed_ftb_quest_dependencies_when_present(self):
+        index = RuntimePackIndex.empty()
+        index = index.with_section(
+            "ftb_quests",
+            (
+                '{"quest_id":"quest_root","chapter_id":null,"title":"Root",'
+                '"dependencies":[],"dependency_types":{},'
+                '"task_item_ids":[],"reward_item_ids":[],"source":"runtime:ftb_quests"}\n'
+                '{"quest_id":"quest_typed","chapter_id":null,"title":"Typed",'
+                '"dependencies":["quest_root","task_missing","quest_missing"],'
+                '"dependency_types":{"quest_root":"quest","task_missing":"task","quest_missing":"quest"},'
+                '"task_item_ids":[],"reward_item_ids":[],"source":"runtime:ftb_quests"}\n'
+            ),
+        )
+
+        errors = runtime_consistency_errors(index)
+
+        self.assertIn("FTB quest dependencies missing from ftb_quests: quest_missing", errors)
+        self.assertTrue(all("task_missing" not in error for error in errors))
 
 
 if __name__ == "__main__":

@@ -54,7 +54,7 @@ cd ../..
 ./scripts/dev ask-local "<installed-instance>" --runtime-dir "runtime-dumps/dump_1" --item-id "minecraft:stone" --question "当前目标缺哪些前置机器/任务/材料？" --pretty
 ```
 
-`validate-dump --require-phase1` 会校验 manifest、section count/hash、标准 runtime section 的 NDJSON content type、Phase 1 section 是否齐全，并要求 `mods`、`items`、`blocks`、`fluids`、`tags`、`recipes`、`advancements` 全部非空；当 registry section 存在时，还会校验 recipes/tags 和 FTB quest item refs 引用的 runtime item/block/fluid 是否存在；当 optional progression section 存在时，还会校验 quest dependencies、completed quest refs 和 player stage refs 的一致性。`build-index --require-phase1` 对索引构建执行同样的 Phase 1 runtime 门槛；不加该参数时仍可用于探索不完整 dump。`ask-local` 默认使用同样的 Phase 1 runtime 要求；仅探索不完整 dump 时可追加 `--allow-partial-runtime`。
+`validate-dump --require-phase1` 会校验 manifest、section count/hash、标准 runtime section 的 NDJSON content type、Phase 1 section 是否齐全，并要求 `mods`、`items`、`blocks`、`fluids`、`tags`、`recipes`、`advancements` 全部非空；当 registry section 存在时，还会校验 recipes/tags 和 FTB quest item refs 引用的 runtime item/block/fluid 是否存在；当 optional progression section 存在时，还会校验 typed quest dependencies、completed quest refs 和 player stage refs 的一致性。`build-index --require-phase1` 对索引构建执行同样的 Phase 1 runtime 门槛；不加该参数时仍可用于探索不完整 dump。`ask-local` 默认使用同样的 Phase 1 runtime 要求；仅探索不完整 dump 时可追加 `--allow-partial-runtime`。
 
 ATM9Sky Phase 1 真实服务器验收报告：
 

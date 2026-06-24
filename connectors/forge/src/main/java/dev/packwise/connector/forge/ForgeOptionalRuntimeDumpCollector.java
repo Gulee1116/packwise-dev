@@ -21,8 +21,10 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Consumer;
@@ -56,11 +58,13 @@ final class ForgeOptionalRuntimeDumpCollector {
         List<String> lines = new ArrayList<>();
         for (Object quest : ftbQuests(questFile)) {
             Object chapter = invokeOptional(quest, "getQuestChapter");
+            DependencySnapshot dependencies = dependencySnapshot(quest);
             lines.add("{"
                     + field("quest_id", codeString(quest)) + ","
                     + nullableField("chapter_id", chapter == null ? null : codeString(chapter)) + ","
                     + nullableField("title", rawTitle(quest)) + ","
-                    + stringArrayField("dependencies", dependencyIds(quest)) + ","
+                    + stringArrayField("dependencies", dependencies.ids()) + ","
+                    + stringMapField("dependency_types", dependencies.types()) + ","
                     + stringArrayField("task_item_ids", taskItemIds(quest)) + ","
                     + stringArrayField("reward_item_ids", rewardItemIds(quest)) + ","
                     + field("source", "runtime:ftb_quests")
@@ -179,15 +183,19 @@ final class ForgeOptionalRuntimeDumpCollector {
         return List.copyOf(quests);
     }
 
-    private static List<String> dependencyIds(Object quest) {
+    private static DependencySnapshot dependencySnapshot(Object quest) {
         Object stream = invokeOptional(quest, "streamDependencies");
         if (!(stream instanceof Stream<?> dependencies)) {
-            return List.of();
+            return new DependencySnapshot(List.of(), Map.of());
         }
-        return dependencies
-                .map(ForgeOptionalRuntimeDumpCollector::codeString)
-                .sorted()
-                .toList();
+        Map<String, String> dependencyTypes = new TreeMap<>();
+        dependencies.forEach(dependency -> {
+            String id = codeString(dependency);
+            if (!id.isBlank() && !"unknown".equals(id)) {
+                dependencyTypes.put(id, objectTypeId(dependency));
+            }
+        });
+        return new DependencySnapshot(List.copyOf(dependencyTypes.keySet()), Map.copyOf(dependencyTypes));
     }
 
     private static List<String> taskItemIds(Object quest) {
@@ -303,6 +311,15 @@ final class ForgeOptionalRuntimeDumpCollector {
         return id == null ? "unknown" : String.valueOf(id);
     }
 
+    private static String objectTypeId(Object value) {
+        Object type = invokeOptional(value, "getObjectType");
+        Object id = type == null ? null : invokeOptional(type, "getId");
+        if (id instanceof String text && !text.isBlank()) {
+            return text;
+        }
+        return "unknown";
+    }
+
     private static String rawTitle(Object value) {
         Object title = invokeOptional(value, "getRawTitle");
         if (title instanceof String text && !text.isBlank()) {
@@ -393,6 +410,25 @@ final class ForgeOptionalRuntimeDumpCollector {
         }
         json.append(']');
         return json.toString();
+    }
+
+    private static String stringMapField(String key, Map<String, String> values) {
+        StringBuilder json = new StringBuilder();
+        json.append('"').append(key).append("\":{");
+        int index = 0;
+        for (Map.Entry<String, String> entry : new TreeMap<>(values).entrySet()) {
+            if (index > 0) {
+                json.append(',');
+            }
+            json.append('"').append(JsonText.escape(entry.getKey())).append("\":\"")
+                    .append(JsonText.escape(entry.getValue())).append('"');
+            index++;
+        }
+        json.append('}');
+        return json.toString();
+    }
+
+    private record DependencySnapshot(List<String> ids, Map<String, String> types) {
     }
 
     private record FtbTeamInfo(String name, List<String> members) {
