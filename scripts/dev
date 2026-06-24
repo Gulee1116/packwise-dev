@@ -16,7 +16,13 @@ Commands:
   shell               Open a shell with the project-local environment active.
   test-python         Run Python agent tests.
   test-java-protocol  Run Java protocol tests without Minecraft/NeoForge.
+  build-forge         Run the full Forge connector Gradle build.
   build-neoforge      Run the full NeoForge connector Gradle build.
+  validate-dump       Validate a local runtime dump directory.
+  import-dump         Validate and import a local runtime dump through AgentService.
+  build-index         Build a normalized Packwise index from an installed instance.
+  ask-local           Answer from a local instance and runtime dump.
+  phase1-acceptance   Run the ATM9Sky Phase 1 acceptance report.
 USAGE
 }
 
@@ -147,24 +153,69 @@ cmd_test_java_protocol() {
   rm -rf "${out}"
   mkdir -p "${out}"
 
-  find connectors/neoforge/src/main/java/dev/packwise/connector/protocol -name '*.java' -print > "${ENV_HOME}/protocol-sources.txt"
-  find connectors/neoforge/src/test/java/dev/packwise/connector/protocol -name '*.java' -print >> "${ENV_HOME}/protocol-sources.txt"
+  find connectors/common/src/main/java/dev/packwise/connector/protocol -name '*.java' -print > "${ENV_HOME}/protocol-sources.txt"
+  find connectors/common/src/test/java/dev/packwise/connector/protocol -name '*.java' -print >> "${ENV_HOME}/protocol-sources.txt"
+  printf '%s\n' connectors/forge/src/main/java/dev/packwise/connector/forge/ForgePackMetadata.java >> "${ENV_HOME}/protocol-sources.txt"
+  printf '%s\n' connectors/forge/src/test/java/dev/packwise/connector/forge/ForgePackMetadataTest.java >> "${ENV_HOME}/protocol-sources.txt"
   printf '%s\n' connectors/neoforge/src/main/java/dev/packwise/connector/neoforge/NeoForgeModSnapshots.java >> "${ENV_HOME}/protocol-sources.txt"
   printf '%s\n' connectors/neoforge/src/test/java/dev/packwise/connector/neoforge/NeoForgeModSnapshotsTest.java >> "${ENV_HOME}/protocol-sources.txt"
 
   javac -encoding UTF-8 -d "${out}" @"${ENV_HOME}/protocol-sources.txt"
+  java -cp "${out}" dev.packwise.connector.protocol.JsonTextTest
   java -cp "${out}" dev.packwise.connector.protocol.ProtocolCodecTest
   java -cp "${out}" dev.packwise.connector.protocol.RuntimeDumpManifestTest
   java -cp "${out}" dev.packwise.connector.protocol.ModsSectionDumperTest
+  java -cp "${out}" dev.packwise.connector.protocol.NdjsonSectionDumperTest
+  java -cp "${out}" dev.packwise.connector.protocol.CommandResponseTest
+  java -cp "${out}" dev.packwise.connector.protocol.QueryAskTest
+  java -cp "${out}" dev.packwise.connector.protocol.AgentAnswerTest
   java -cp "${out}" dev.packwise.connector.protocol.AgentHttpClientTest
   java -cp "${out}" dev.packwise.connector.protocol.RuntimeDumpUploaderTest
+  java -cp "${out}" dev.packwise.connector.protocol.RuntimeDumpFileWriterTest
+  java -cp "${out}" dev.packwise.connector.forge.ForgePackMetadataTest
   java -cp "${out}" dev.packwise.connector.neoforge.NeoForgeModSnapshotsTest
+}
+
+cmd_build_forge() {
+  assert_local_env
+  cd "${REPO_ROOT}/connectors/forge"
+  ./gradlew build
 }
 
 cmd_build_neoforge() {
   assert_local_env
   cd "${REPO_ROOT}/connectors/neoforge"
   ./gradlew build
+}
+
+cmd_phase1_acceptance() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent phase1-acceptance "$@"
+}
+
+cmd_import_dump() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent import-dump "$@"
+}
+
+cmd_validate_dump() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent validate-dump "$@"
+}
+
+cmd_build_index() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent build-index "$@"
+}
+
+cmd_ask_local() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent ask-local "$@"
 }
 
 command="${1:-}"
@@ -187,8 +238,31 @@ case "${command}" in
   test-java-protocol)
     cmd_test_java_protocol
     ;;
+  build-forge)
+    cmd_build_forge
+    ;;
   build-neoforge)
     cmd_build_neoforge
+    ;;
+  import-dump)
+    shift
+    cmd_import_dump "$@"
+    ;;
+  validate-dump)
+    shift
+    cmd_validate_dump "$@"
+    ;;
+  build-index)
+    shift
+    cmd_build_index "$@"
+    ;;
+  ask-local)
+    shift
+    cmd_ask_local "$@"
+    ;;
+  phase1-acceptance)
+    shift
+    cmd_phase1_acceptance "$@"
     ;;
   ""|-h|--help|help)
     usage

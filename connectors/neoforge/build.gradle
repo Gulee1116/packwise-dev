@@ -12,6 +12,14 @@ java {
     }
 }
 
+sourceSets {
+    main {
+        java {
+            srcDir '../common/src/main/java'
+        }
+    }
+}
+
 repositories {
     def localMinecraftLibraries = []
     def configuredMinecraftLibraries = System.getenv('PACKWISE_MINECRAFT_LIBRARIES')

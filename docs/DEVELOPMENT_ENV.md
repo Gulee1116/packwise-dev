@@ -50,6 +50,7 @@ Run all commands through the wrapper:
 ./scripts/dev doctor
 ./scripts/dev test-python
 ./scripts/dev test-java-protocol
+./scripts/dev build-forge
 ./scripts/dev build-neoforge
 ```
 

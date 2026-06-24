@@ -7,7 +7,10 @@ Packwise 是面向 Minecraft 整合包服务器的进度指导 agent。当前仓
 - `AGENTS.md`：后续 agent 的本地环境和启动约定。
 - `docs/HANDOFF.md`：当前交接状态、公开仓库安全边界和下一步建议。
 - `docs/DEVELOPMENT_ENV.md`：项目专属 Python/Java 环境说明。
+- `docs/ATM9SKY_PHASE1_ACCEPTANCE.md`：ATM9Sky Phase 1 真实服务器验收步骤和证据报告命令。
 - `docs/protocol/CONNECTOR_AGENT_PROTOCOL.md`：connector-agent JSON 协议草案。
+- `connectors/common`：无 Minecraft/loader 依赖的 Java connector-common 协议、NDJSON dump helper 和命令响应模型。
+- `connectors/forge`：Java/Forge connector，按 ATM9 To The Sky 的 Minecraft `1.20.1` + Forge `47.4.20` 对齐。
 - `connectors/neoforge`：Java/NeoForge connector 骨架，按 StoneBlock 4 的 Minecraft `1.21.1` + NeoForge `21.1.233` 对齐。
 - `apps/agent`：轻量 Python agent service/harness。
 
@@ -43,6 +46,7 @@ Linux/macOS 推荐使用统一入口：
 ```bash
 ./scripts/dev test-python
 ./scripts/dev test-java-protocol
+./scripts/dev build-forge
 ./scripts/dev build-neoforge
 ```
 
@@ -74,10 +78,31 @@ $env:PYTHONPATH = "$PWD\apps\agent"
 python -m packwise_agent inspect-quests "<installed-instance>" --output ".\artifacts\stoneblock4-quests-skeleton.json" --pretty
 ```
 
+从静态检查和 runtime dump section 文件构建规范化 Packwise index：
+
+```bash
+./scripts/dev validate-dump "runtime-dumps/dump_1" --require-phase1 --pretty
+./scripts/dev import-dump "runtime-dumps/dump_1" --instance "<installed-instance>" --require-phase1 --pretty
+./scripts/dev build-index "<installed-instance>" --runtime-dir "runtime-dumps/dump_1" --pretty
+./scripts/dev ask-local "<installed-instance>" --runtime-dir "runtime-dumps/dump_1" --item-id "minecraft:stone" --question "当前目标缺哪些前置机器/任务/材料？" --pretty
+```
+
+`validate-dump --require-phase1` 会校验 manifest、section count/hash、Phase 1 section 是否齐全，并要求 `mods`、`items`、`blocks`、`fluids`、`tags`、`recipes`、`advancements` 全部非空；当 registry section 存在时，还会校验 recipes/tags 和 FTB quest item refs 引用的 runtime item/block/fluid 是否存在；当 optional progression section 存在时，还会校验 quest dependencies、completed quest refs 和 player stage refs 的一致性。`ask-local` 默认使用同样的 Phase 1 runtime 要求；仅探索不完整 dump 时可追加 `--allow-partial-runtime`。
+
+Forge connector 的 `/packwise dump` 会在服务器工作目录下写出 `packwise-dumps/<dump_id>/manifest.json` 和各 section 的 `*.ndjson` 文件；配置 `PACKWISE_AGENT_URL` 时会同时上传给 agent。
+`import-dump` 会使用和 HTTP 上传一致的 AgentService manifest/section handler 导入本地 dump；带 `--instance` 时还会导入静态检查和任务书上下文，并返回同一内存态 service 构建出的 Packwise index 摘要。
+Agent 侧 runtime index 支持 Phase 1 核心 section，也支持可选的 `ftb_quests`、`player_progress`、`team_progress`、`stages`，这些可选 section 会提升进度/解锁/阻塞问题的 readiness。
+Forge 侧 recipe dump 会尽量写出 `ingredient_items`，agent 可据此回答基础“缺哪些材料”问题；如果服务器加载了 FTB Quests、FTB Teams 或 GameStages，Forge connector 会通过 soft-linked reflection 尝试写出 quest/progress/stage optional sections。复杂机器链仍需要任务和进度 section 补充。
+ATM9Sky Phase 1 真实服务器验收必须在运行过 `/packwise status` 和 `/packwise dump` 后执行 `phase1-acceptance`，详见 `docs/ATM9SKY_PHASE1_ACCEPTANCE.md`。
+
+```bash
+./scripts/dev phase1-acceptance --instance "<installed-atm9sky-instance>" --runtime-dir "<dump-dir>" --server-log "<server-log>" --item-id "<item-with-runtime-recipe-or-quest-ref>" --pretty
+```
+
 NeoForge connector 完整构建：
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-neoforge.ps1
+```bash
+./scripts/dev build-neoforge
 ```
 
 产物位于 `connectors/neoforge/build/libs/`。
@@ -100,11 +125,23 @@ python -m packwise_agent --host 127.0.0.1 --port 8765 --enable-llm
 
 当前 HTTP endpoints：
 
+路径中的 `{connector_id}`、`{dump_id}`、`{section_name}` 按单个 URL path
+segment percent-encoding。
+
 - `GET /v1/health`
 - `POST /v1/connectors/hello`
+- `GET /v1/connectors/{connector_id}`
+- `POST /v1/connectors/{connector_id}/static-inspect`
+- `POST /v1/connectors/{connector_id}/quest-book`
 - `POST /v1/connectors/{connector_id}/runtime-dumps`
 - `POST /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/sections/{section_name}`
+- `GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/mods`
+- `GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/recipes`
+- `GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/index-summary`
+- `GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/pack-index`
 - `GET /v1/runtime-dumps/{dump_id}/mods`
+- `GET /v1/runtime-dumps/{dump_id}/recipes`
+- `GET /v1/runtime-dumps/{dump_id}/index-summary`
 - `POST /v1/query/ask`
 
 DeepSeek/OpenAI-compatible client 已接入为可选 answer pipeline；默认不调用外部 API，避免测试时误触发付费请求。

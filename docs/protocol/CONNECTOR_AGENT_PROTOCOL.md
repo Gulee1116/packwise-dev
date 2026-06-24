@@ -69,6 +69,8 @@ POST /v1/connectors/hello
     "pack_id": "ftb-stoneblock-4",
     "pack_name": "FTB StoneBlock 4",
     "pack_version": "1.14.2",
+    "connector_mod_id": "packwise_connector",
+    "connector_version": "0.1.0",
     "capabilities": [
       "runtime_dump",
       "commands",
@@ -101,6 +103,98 @@ POST /v1/connectors/hello
 }
 ```
 
+## Connector Status
+
+方向：client/web/dev -> agent
+
+用途：查询 agent 当前记住的 connector hello、静态上下文状态和该 connector
+已上传的 runtime dump 摘要。第一版用于在线 `/packwise dump` 后确认
+`connector.hello` 已被 agent 接收，并确认 dump 被归到正确 connector。
+
+HTTP：
+
+```text
+GET /v1/connectors/{connector_id}
+```
+
+如果 agent 没有该 connector 的 hello、static inspect、quest book 或 runtime
+dump 状态，返回 404 `not_found`。
+
+响应：
+
+```json
+{
+  "protocol": "packwise.connector.v1",
+  "message_type": "connector.status",
+  "connector_id": "atm9sky-dev-server",
+  "hello_present": true,
+  "hello": {
+    "message_id": "msg_0001",
+    "sent_at": "2026-06-14T08:00:00Z"
+  },
+  "connector": {
+    "id": "atm9sky-dev-server",
+    "side": "server",
+    "loader": "forge",
+    "loader_version": "47.4.20",
+    "minecraft_version": "1.20.1",
+    "pack_id": "atm9sky",
+    "pack_name": "All the Mods 9 - To the Sky",
+    "pack_version": "1.1.0",
+    "connector_mod_id": "packwise_connector",
+    "connector_version": "0.1.0",
+    "capabilities": [
+      "runtime_dump",
+      "commands"
+    ]
+  },
+  "static_inspect_present": false,
+  "quest_book_present": false,
+  "runtime_dumps": [
+    {
+      "dump_id": "dump_20260614_081000",
+      "minecraft_version": "1.20.1",
+      "loader": "forge",
+      "loader_version": "47.4.20",
+      "connector_mod_id": "packwise_connector",
+      "connector_version": "0.1.0",
+      "section_count": 7,
+      "declared_sections": [
+        "mods",
+        "items",
+        "blocks",
+        "fluids",
+        "tags",
+        "recipes",
+        "advancements"
+      ],
+      "uploaded_sections": [
+        "mods",
+        "items",
+        "blocks",
+        "fluids",
+        "tags",
+        "recipes",
+        "advancements"
+      ],
+      "uploaded_section_count": 7,
+      "missing_sections": [],
+      "extra_sections": [],
+      "upload_complete": true,
+      "indexed_summary": {
+        "recipes": 12000,
+        "tags": 3000
+      },
+      "runtime_consistency_errors": []
+    }
+  ]
+}
+```
+
+`runtime_dumps[*].upload_complete` 只有在 manifest 中声明的每个 section 都已
+成功上传并通过 count/hash 校验后才为 `true`；`missing_sections` 用于定位
+manifest 已到达但 section upload 中断的在线 dump。
+
 ## Ask Request
 
 方向：connector/client/web -> agent
@@ -127,10 +221,8 @@ POST /v1/query/ask
     "connector_id": "stoneblock4-dev-server",
     "server_id": "local-dev",
     "team_id": "team-main",
-    "player": {
-      "uuid": "00000000-0000-0000-0000-000000000000",
-      "name": "DevPlayer"
-    },
+    "player_id": "00000000-0000-0000-0000-000000000000",
+    "player_name": "DevPlayer",
     "known_progress": {
       "completed_quests": [],
       "stages": []
@@ -138,6 +230,11 @@ POST /v1/query/ask
   }
 }
 ```
+
+When `player_id`, `player_name`, or `team_id` is present, the agent scopes
+runtime `player_progress`, `team_progress`, and `stages` to that player/team
+before marking quests complete or selecting next steps. Without these fields,
+answers may only safely describe aggregate runtime context.
 
 响应：
 
@@ -172,12 +269,20 @@ POST /v1/query/ask
 方向：connector -> agent
 
 用途：runtime dump 的目录和摘要。大对象可以分块上传或写文件后由 agent 拉取。
+在线上传时，connector 应先发送 `connector.hello`，再发送 runtime dump
+manifest 和 section 内容。这样即使没有离线 `static-inspect`，agent 也有最小
+loader、pack、capability context 可以关联 dump。
 
 HTTP：
 
 ```text
 POST /v1/connectors/{connector_id}/runtime-dumps
 ```
+
+URL 中的 `{connector_id}`、`{dump_id}`、`{section_name}` 都是单个 path
+segment；connector 必须对这些 segment 做 percent-encoding，agent 在路由后
+按 UTF-8 解码。这样 connector ID 或 dump ID 中出现空格、冒号或斜杠时仍然
+不会改变 URL 层级。
 
 最小字段：
 
@@ -192,6 +297,8 @@ POST /v1/connectors/{connector_id}/runtime-dumps
   "minecraft_version": "1.21.1",
   "loader": "neoforge",
   "loader_version": "21.1.233",
+  "connector_mod_id": "packwise_connector",
+  "connector_version": "0.1.0",
   "sections": [
     {
       "name": "items",
@@ -238,11 +345,15 @@ POST /v1/connectors/{connector_id}/runtime-dumps
 - `team_progress`
 - `stages`
 
+其中 `mods`、`items`、`blocks`、`fluids`、`tags`、`recipes`、`advancements` 是 Phase 1 connector 的核心 section；`ftb_quests`、`player_progress`、`team_progress`、`stages` 是可选 runtime truth section，存在时优先于静态任务书 preload。
+
 ## Runtime Dump Section Upload
 
 方向：connector -> agent
 
 用途：上传 runtime dump manifest 中声明的具体 section 内容。第一版使用 NDJSON，便于逐行流式处理和后续拆分大文件。
+标准 runtime section（`mods`、`items`、`blocks`、`fluids`、`tags`、`recipes`、`advancements`、`ftb_quests`、`player_progress`、`team_progress`、`stages`）必须声明 `content_type: application/x-ndjson`。
+Connector 也可以把同一份 manifest 和 section 内容写成本地文件，供离线校验、手工导入或 agent CLI `validate-dump` / `build-index` / `ask-local` 使用；本地文件布局不是独立协议，仍以 manifest 和 section 内容为准。
 
 HTTP：
 
@@ -257,6 +368,49 @@ Content-Type: application/x-ndjson
 {"mod_id":"minecraft","display_name":"Minecraft","version":"1.21.1","source":"builtin"}
 {"mod_id":"neoforge","display_name":"NeoForge","version":"21.1.233","source":"neoforge:ModList"}
 ```
+
+示例：`recipes` section
+
+```ndjson
+{"id":"minecraft:stonecutting/stone","type":"minecraft:stonecutting","serializer":"minecraft:stonecutting","result_item":"minecraft:stone","result_count":1,"ingredient_items":["minecraft:cobblestone"],"source":"runtime:recipe_manager"}
+```
+
+`ingredient_items` 是可选数组，表示该配方所有 ingredient 候选物品 ID 的去重集合。复杂配方仍以后续完整 ingredient graph 为准，但第一版可用它回答基础材料缺口问题。
+
+示例：可选 `ftb_quests` section
+
+```ndjson
+{"quest_id":"0000000000000002","chapter_id":"0000000000000001","title":"Getting Started","dependencies":[],"task_item_ids":["minecraft:stone"],"reward_item_ids":["minecraft:apple"],"source":"runtime:ftb_quests"}
+```
+
+示例：可选 `team_progress` / `player_progress` / `stages` section
+
+```ndjson
+{"subject_type":"team","subject_id":"00000000-0000-0000-0000-000000000001","completed_quests":["0000000000000002"],"completed_advancements":[],"stages":[],"source":"runtime:ftb_quests","team_name":"DevTeam#00000000","members":["00000000-0000-0000-0000-000000000002"]}
+{"subject_type":"player","subject_id":"00000000-0000-0000-0000-000000000002","completed_quests":["0000000000000002"],"completed_advancements":[],"stages":["stone_age"],"source":"runtime:ftb_quests","player_name":"DevPlayer","team_id":"00000000-0000-0000-0000-000000000001"}
+{"subject_type":"player","subject_id":"00000000-0000-0000-0000-000000000002","stage":"stone_age","active":true,"source":"runtime:gamestages","player_name":"DevPlayer"}
+```
+
+Forge connector 对 `ftb_quests`、`player_progress`、`team_progress` 和 `stages` 使用 guarded reflection：只有对应 mod/API 存在时才写入这些 optional section；API 不存在或变更时跳过 optional section，不应影响 Phase 1 核心 dump。
+
+## Static Inspect And Quest Book Context
+
+方向：agent harness/tooling -> agent
+
+用途：把离线静态检查和 FTB Quests 任务书骨架提供给 agent，作为 preload/context。runtime dump 仍是配方、标签、注册表、进度和 stage 的权威来源。
+
+HTTP：
+
+```text
+POST /v1/connectors/{connector_id}/static-inspect
+POST /v1/connectors/{connector_id}/quest-book
+GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/pack-index
+```
+
+`pack-index` 响应使用 `packwise.index.v1`，记录选中的 pack profile、静态来源清单、runtime section counts、以及每类事实的 reconciliation 状态。新 Forge 1.20.1 整合包应主要通过新增/选择 profile、运行 `inspect` 和上传 runtime dump 来接入。
+如果该 connector/dump 已存在但尚未上传 `static-inspect` 且 agent 也没有
+`connector.hello` 可作为最小 pack context，`pack-index` 必须返回 400
+`missing_instance_context`，而不是返回不完整索引或断开连接。
 
 响应：
 
@@ -281,18 +435,30 @@ Content-Type: application/x-ndjson
 - `Content-Type` 必须与 manifest 中对应 section 的 `content_type` 一致。
 - section 非空行数必须与 manifest 中对应 section 的 `count` 一致。
 - section UTF-8 正文的 SHA-256 必须与 manifest 中对应 section 的 `sha256` 一致。
+- agent runtime consistency validation 会校验 duplicate IDs、recipe/tag/quest item registry refs、FTB quest dependencies、player/team completed quest refs，以及 player progress stage refs 和 `stages` section 的一致性；不完整 optional section 应暴露为 `runtime_consistency_errors`，不能静默参与高置信回答。
 
-## Runtime Mods Query
+## Runtime Dump Queries
 
 方向：client/web/dev -> agent
 
-用途：查询 agent 已索引的 `mods` section。第一版用于验证 connector 是否真的把服务端 mod 列表同步到了 agent。
+用途：查询 agent 已索引的 runtime dump section 摘要。第一版用于验证 connector 是否真的把服务端 mod 列表、recipes 和 runtime index 同步到了 agent。
 
 HTTP：
 
 ```text
+GET /v1/connectors/{connector_id}
+GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/mods
+GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/recipes
+GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/index-summary
 GET /v1/runtime-dumps/{dump_id}/mods
+GET /v1/runtime-dumps/{dump_id}/recipes
+GET /v1/runtime-dumps/{dump_id}/index-summary
 ```
+
+优先使用带 `{connector_id}` 的 scoped URL；不带 connector 的 URL 只适合单 dump
+调试或 dump id 全局唯一的场景。
+Scoped URL 如果找不到对应的 `{connector_id}` + `{dump_id}` runtime dump，
+必须返回 404 `not_found`，避免把错误 connector 或重复 dump id 误报为空结果。
 
 响应：
 
@@ -300,6 +466,7 @@ GET /v1/runtime-dumps/{dump_id}/mods
 {
   "protocol": "packwise.connector.v1",
   "message_type": "runtime_dump.mods",
+  "connector_id": "stoneblock4-dev-server",
   "dump_id": "dump_20260614_081000",
   "mods": [
     {
@@ -350,7 +517,9 @@ GET /v1/runtime-dumps/{dump_id}/mods
 - connector_id 与 URL 路径不一致时必须拒绝。
 - agent 收到 runtime dump manifest 后返回 `runtime_dump.ack` 并保存 manifest。
 - `mods` section 可以由 Java connector 生成 NDJSON，并计算 `count` 与 `sha256`。
-- connector 可以按 manifest -> section 顺序上传 runtime dump。
+- connector 可以按 hello -> manifest -> section 顺序上传 runtime dump；没有
+  connector metadata 的旧客户端仍可按 manifest -> section 上传。
 - agent 收到 runtime dump section 后返回 `runtime_dump.section_ack` 并保存 section 内容。
 - agent 必须校验 runtime dump section 的 `count` 和 `sha256`。
-- agent 必须能解析 `mods` section 并通过 `GET /v1/runtime-dumps/{dump_id}/mods` 返回已索引 mod 列表。
+- agent 必须按 connector id + dump id 隔离 runtime dump 状态，避免多个服务器或整合包使用相同本地 dump id 时互相污染。
+- agent 必须能解析 `mods` section，并通过 connector-scoped `GET /v1/connectors/{connector_id}/runtime-dumps/{dump_id}/mods` 返回已索引 mod 列表。

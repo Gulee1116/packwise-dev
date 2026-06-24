@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Mapping
 
 
 PROTOCOL_VERSION = "packwise.connector.v1"
+RUNTIME_DUMP_NDJSON_CONTENT_TYPE = "application/x-ndjson"
 
 
 class ProtocolError(ValueError):
@@ -28,6 +29,8 @@ class ConnectorInfo:
     pack_id: str
     pack_name: str
     pack_version: str
+    connector_mod_id: str | None
+    connector_version: str | None
     capabilities: List[str]
 
     @classmethod
@@ -41,6 +44,8 @@ class ConnectorInfo:
             pack_id=_require_str(payload, "pack_id"),
             pack_name=_require_str(payload, "pack_name"),
             pack_version=_require_str(payload, "pack_version"),
+            connector_mod_id=_optional_str(payload, "connector_mod_id"),
+            connector_version=_optional_str(payload, "connector_version"),
             capabilities=_require_str_list(payload, "capabilities"),
         )
 
@@ -54,6 +59,8 @@ class ConnectorInfo:
             "pack_id": self.pack_id,
             "pack_name": self.pack_name,
             "pack_version": self.pack_version,
+            "connector_mod_id": self.connector_mod_id,
+            "connector_version": self.connector_version,
             "capabilities": list(self.capabilities),
         }
 
@@ -142,6 +149,8 @@ class RuntimeDumpManifest:
     minecraft_version: str
     loader: str
     loader_version: str
+    connector_mod_id: str | None
+    connector_version: str | None
     sections: List[RuntimeDumpSection]
 
     @classmethod
@@ -155,6 +164,8 @@ class RuntimeDumpManifest:
         loader: str,
         loader_version: str,
         sections: List[RuntimeDumpSection],
+        connector_mod_id: str | None = None,
+        connector_version: str | None = None,
     ) -> "RuntimeDumpManifest":
         return cls(
             protocol=PROTOCOL_VERSION,
@@ -166,6 +177,8 @@ class RuntimeDumpManifest:
             minecraft_version=minecraft_version,
             loader=loader,
             loader_version=loader_version,
+            connector_mod_id=connector_mod_id,
+            connector_version=connector_version,
             sections=list(sections),
         )
 
@@ -193,6 +206,8 @@ class RuntimeDumpManifest:
             minecraft_version=_require_str(payload, "minecraft_version"),
             loader=_require_str(payload, "loader"),
             loader_version=_require_str(payload, "loader_version"),
+            connector_mod_id=_optional_str(payload, "connector_mod_id"),
+            connector_version=_optional_str(payload, "connector_version"),
             sections=sections,
         )
 
@@ -211,6 +226,8 @@ class RuntimeDumpManifest:
             "minecraft_version": self.minecraft_version,
             "loader": self.loader,
             "loader_version": self.loader_version,
+            "connector_mod_id": self.connector_mod_id,
+            "connector_version": self.connector_version,
             "sections": [section.to_dict() for section in self.sections],
         }
 
@@ -223,12 +240,17 @@ def validate_ask(payload: Mapping[str, Any]) -> Dict[str, Any]:
     question = _require_str(payload, "question")
     if not question.strip():
         raise ProtocolError("question must not be empty")
+    context = payload.get("context")
+    if context is None:
+        context = {}
+    if not isinstance(context, Mapping):
+        raise ProtocolError("context must be an object")
     return {
         "message_id": _require_str(payload, "message_id"),
         "sent_at": _require_str(payload, "sent_at"),
         "question": question,
         "locale": str(payload.get("locale", "zh_cn")),
-        "context": dict(payload.get("context") or {}),
+        "context": dict(context),
     }
 
 
@@ -242,6 +264,15 @@ def _require_str(payload: Mapping[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value:
         raise ProtocolError(f"{key} must be a non-empty string")
+    return value
+
+
+def _optional_str(payload: Mapping[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ProtocolError(f"{key} must be a non-empty string when present")
     return value
 
 

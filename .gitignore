@@ -33,6 +33,7 @@ fixtures/local/
 *.zip
 *.mrpack
 *.jar
+!connectors/forge/gradle/wrapper/gradle-wrapper.jar
 !connectors/neoforge/gradle/wrapper/gradle-wrapper.jar
 
 # Logs and local secrets

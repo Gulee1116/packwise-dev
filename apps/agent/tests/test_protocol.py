@@ -7,6 +7,7 @@ from packwise_agent.protocol import (
     ProtocolError,
     RuntimeDumpManifest,
     RuntimeDumpSection,
+    validate_ask,
 )
 
 
@@ -24,6 +25,8 @@ class ProtocolTest(unittest.TestCase):
                 pack_id="ftb-stoneblock-4",
                 pack_name="FTB StoneBlock 4",
                 pack_version="1.14.2",
+                connector_mod_id="packwise_connector",
+                connector_version="0.1.0",
                 capabilities=[
                     "runtime_dump",
                     "commands",
@@ -43,6 +46,8 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual("msg_0001", decoded.message_id)
         self.assertEqual(ConnectorSide.SERVER, decoded.connector.side)
         self.assertEqual("21.1.233", decoded.connector.loader_version)
+        self.assertEqual("packwise_connector", decoded.connector.connector_mod_id)
+        self.assertEqual("0.1.0", decoded.connector.connector_version)
         self.assertIn("runtime_dump", decoded.connector.capabilities)
 
     def test_rejects_wrong_protocol(self):
@@ -75,6 +80,8 @@ class ProtocolTest(unittest.TestCase):
             minecraft_version="1.21.1",
             loader="neoforge",
             loader_version="21.1.233",
+            connector_mod_id="packwise_connector",
+            connector_version="0.1.0",
             sections=[
                 RuntimeDumpSection("mods", "application/x-ndjson", 404, "sha-mods"),
                 RuntimeDumpSection("recipes", "application/x-ndjson", 8000, "sha-recipes"),
@@ -84,11 +91,28 @@ class ProtocolTest(unittest.TestCase):
         encoded = manifest.to_dict()
         self.assertEqual("runtime_dump.manifest", encoded["message_type"])
         self.assertEqual("stoneblock4-dev-server", encoded["connector_id"])
+        self.assertEqual("packwise_connector", encoded["connector_mod_id"])
+        self.assertEqual("0.1.0", encoded["connector_version"])
         self.assertEqual("recipes", encoded["sections"][1]["name"])
 
         decoded = RuntimeDumpManifest.from_dict(encoded)
         self.assertEqual("dump_20260614_081000", decoded.dump_id)
+        self.assertEqual("packwise_connector", decoded.connector_mod_id)
+        self.assertEqual("0.1.0", decoded.connector_version)
         self.assertEqual(8000, decoded.sections[1].count)
+
+    def test_query_ask_rejects_non_object_context(self):
+        with self.assertRaisesRegex(ProtocolError, "context must be an object"):
+            validate_ask(
+                {
+                    "protocol": "packwise.connector.v1",
+                    "message_type": "query.ask",
+                    "message_id": "msg_0100",
+                    "sent_at": "2026-06-14T08:15:00Z",
+                    "question": "minecraft:stone 怎么做？",
+                    "context": ["not", "an", "object"],
+                }
+            )
 
 
 if __name__ == "__main__":
