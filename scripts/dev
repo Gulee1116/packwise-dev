@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ENV_HOME="${REPO_ROOT}/.packwise-env"
+JDK_URL="https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk"
+
+usage() {
+  cat <<'USAGE'
+Usage: ./scripts/dev <command>
+
+Commands:
+  setup               Create/update the project-local Python venv and JDK 21.
+  doctor              Verify the active local Python, Java, and cache paths.
+  shell               Open a shell with the project-local environment active.
+  test-python         Run Python agent tests.
+  test-java-protocol  Run Java protocol tests without Minecraft/NeoForge.
+  build-neoforge      Run the full NeoForge connector Gradle build.
+USAGE
+}
+
+require_linux_x64() {
+  local os arch
+  os="$(uname -s)"
+  arch="$(uname -m)"
+  if [ "${os}" != "Linux" ] || [ "${arch}" != "x86_64" ]; then
+    echo "setup currently downloads a Linux x64 JDK. Install JDK 21 under ${ENV_HOME}/jdk manually on this platform." >&2
+    exit 1
+  fi
+}
+
+download_file() {
+  local url="$1"
+  local dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --retry 3 --retry-delay 2 -o "${dest}" "${url}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "${dest}" "${url}"
+  else
+    echo "curl or wget is required to download JDK 21." >&2
+    exit 1
+  fi
+}
+
+setup_python() {
+  mkdir -p "${ENV_HOME}/pip-cache" "${ENV_HOME}/pycache"
+  export PIP_CACHE_DIR="${ENV_HOME}/pip-cache"
+  export PYTHONPYCACHEPREFIX="${ENV_HOME}/pycache"
+  if [ ! -x "${ENV_HOME}/python/bin/python" ]; then
+    python3 -m venv "${ENV_HOME}/python"
+  fi
+  # shellcheck source=/dev/null
+  source "${ENV_HOME}/python/bin/activate"
+  python -m pip install --upgrade pip
+}
+
+setup_jdk() {
+  if [ -x "${ENV_HOME}/jdk/bin/java" ] && "${ENV_HOME}/jdk/bin/java" -version 2>&1 | grep -q 'version "21'; then
+    return
+  fi
+
+  require_linux_x64
+  mkdir -p "${ENV_HOME}/cache" "${ENV_HOME}/jdk-extract"
+  rm -rf "${ENV_HOME}/jdk" "${ENV_HOME}/jdk-extract"
+  mkdir -p "${ENV_HOME}/jdk-extract"
+
+  local archive="${ENV_HOME}/cache/temurin-jdk21-linux-x64.tar.gz"
+  download_file "${JDK_URL}" "${archive}"
+  tar -xzf "${archive}" -C "${ENV_HOME}/jdk-extract"
+
+  local extracted
+  extracted="$(find "${ENV_HOME}/jdk-extract" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  if [ -z "${extracted}" ]; then
+    echo "JDK archive did not contain an extracted directory." >&2
+    exit 1
+  fi
+
+  mv "${extracted}" "${ENV_HOME}/jdk"
+  rm -rf "${ENV_HOME}/jdk-extract"
+}
+
+activate_env() {
+  # shellcheck source=env.sh
+  source "${SCRIPT_DIR}/env.sh"
+}
+
+assert_local_env() {
+  activate_env
+
+  if [ "${JAVA_HOME:-}" != "${ENV_HOME}/jdk" ]; then
+    echo "JAVA_HOME must be ${ENV_HOME}/jdk, got ${JAVA_HOME:-<unset>}." >&2
+    exit 1
+  fi
+  if [ "${GRADLE_USER_HOME:-}" != "${ENV_HOME}/gradle" ]; then
+    echo "GRADLE_USER_HOME must be ${ENV_HOME}/gradle, got ${GRADLE_USER_HOME:-<unset>}." >&2
+    exit 1
+  fi
+  if ! java -version 2>&1 | grep -q 'version "21'; then
+    echo "Java 21 is required." >&2
+    java -version >&2 || true
+    exit 1
+  fi
+  if ! javac -version 2>&1 | grep -q '^javac 21'; then
+    echo "javac 21 is required." >&2
+    javac -version >&2 || true
+    exit 1
+  fi
+}
+
+cmd_setup() {
+  mkdir -p "${ENV_HOME}/gradle"
+  setup_python
+  setup_jdk
+  assert_local_env
+  doctor
+}
+
+doctor() {
+  printf 'repo: %s\n' "${PACKWISE_REPO_ROOT}"
+  printf 'env: %s\n' "${PACKWISE_ENV_HOME}"
+  printf 'python: '
+  python --version
+  printf 'pip: '
+  pip --version
+  printf 'java: '
+  java -version 2>&1 | head -n 1
+  printf 'javac: '
+  javac -version
+  printf 'JAVA_HOME=%s\n' "${JAVA_HOME:-}"
+  printf 'GRADLE_USER_HOME=%s\n' "${GRADLE_USER_HOME:-}"
+  printf 'PIP_CACHE_DIR=%s\n' "${PIP_CACHE_DIR:-}"
+  printf 'PYTHONPYCACHEPREFIX=%s\n' "${PYTHONPYCACHEPREFIX:-}"
+  printf 'PYTHONPATH=%s\n' "${PYTHONPATH:-}"
+}
+
+cmd_test_python() {
+  assert_local_env
+  cd "${REPO_ROOT}/apps/agent"
+  python -m unittest discover -s tests
+}
+
+cmd_test_java_protocol() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  local out="connectors/neoforge/build/protocol-test-classes"
+  rm -rf "${out}"
+  mkdir -p "${out}"
+
+  find connectors/neoforge/src/main/java/dev/packwise/connector/protocol -name '*.java' -print > "${ENV_HOME}/protocol-sources.txt"
+  find connectors/neoforge/src/test/java/dev/packwise/connector/protocol -name '*.java' -print >> "${ENV_HOME}/protocol-sources.txt"
+  printf '%s\n' connectors/neoforge/src/main/java/dev/packwise/connector/neoforge/NeoForgeModSnapshots.java >> "${ENV_HOME}/protocol-sources.txt"
+  printf '%s\n' connectors/neoforge/src/test/java/dev/packwise/connector/neoforge/NeoForgeModSnapshotsTest.java >> "${ENV_HOME}/protocol-sources.txt"
+
+  javac -encoding UTF-8 -d "${out}" @"${ENV_HOME}/protocol-sources.txt"
+  java -cp "${out}" dev.packwise.connector.protocol.ProtocolCodecTest
+  java -cp "${out}" dev.packwise.connector.protocol.RuntimeDumpManifestTest
+  java -cp "${out}" dev.packwise.connector.protocol.ModsSectionDumperTest
+  java -cp "${out}" dev.packwise.connector.protocol.AgentHttpClientTest
+  java -cp "${out}" dev.packwise.connector.protocol.RuntimeDumpUploaderTest
+  java -cp "${out}" dev.packwise.connector.neoforge.NeoForgeModSnapshotsTest
+}
+
+cmd_build_neoforge() {
+  assert_local_env
+  cd "${REPO_ROOT}/connectors/neoforge"
+  ./gradlew build
+}
+
+command="${1:-}"
+case "${command}" in
+  setup)
+    cmd_setup
+    ;;
+  doctor)
+    assert_local_env
+    doctor
+    ;;
+  shell)
+    assert_local_env
+    cd "${REPO_ROOT}"
+    exec "${SHELL:-/bin/bash}"
+    ;;
+  test-python)
+    cmd_test_python
+    ;;
+  test-java-protocol)
+    cmd_test_java_protocol
+    ;;
+  build-neoforge)
+    cmd_build_neoforge
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: ${command}" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -4,14 +4,49 @@ Packwise 是面向 Minecraft 整合包服务器的进度指导 agent。当前仓
 
 ## 当前模块
 
+- `AGENTS.md`：后续 agent 的本地环境和启动约定。
 - `docs/HANDOFF.md`：当前交接状态、公开仓库安全边界和下一步建议。
+- `docs/DEVELOPMENT_ENV.md`：项目专属 Python/Java 环境说明。
 - `docs/protocol/CONNECTOR_AGENT_PROTOCOL.md`：connector-agent JSON 协议草案。
 - `connectors/neoforge`：Java/NeoForge connector 骨架，按 StoneBlock 4 的 Minecraft `1.21.1` + NeoForge `21.1.233` 对齐。
 - `apps/agent`：轻量 Python agent service/harness。
 
+## 本地环境
+
+本项目约定所有 Python、Java、Gradle 和缓存状态都局限在仓库内的 `.packwise-env/`。不要使用全局 pip、用户级 pip、系统 Java 或默认 `~/.gradle` 缓存来运行本项目。
+
+首次准备环境：
+
+```bash
+./scripts/dev setup
+```
+
+日常检查和进入环境：
+
+```bash
+./scripts/dev doctor
+./scripts/dev shell
+```
+
+如果需要执行原生命令，先从仓库根目录激活：
+
+```bash
+source scripts/env.sh
+```
+
+详细约定见 `docs/DEVELOPMENT_ENV.md`。
+
 ## 本地测试
 
-Java 协议层测试：
+Linux/macOS 推荐使用统一入口：
+
+```bash
+./scripts/dev test-python
+./scripts/dev test-java-protocol
+./scripts/dev build-neoforge
+```
+
+Windows PowerShell 脚本仍可直接运行。Java 协议层测试：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-java-protocol.ps1

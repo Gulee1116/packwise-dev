@@ -25,6 +25,22 @@ Do not commit:
 
 The `.gitignore` is configured to exclude the local modpack sample directory, runtime artifacts, build outputs, Python caches, local `.env` files, and `.codex/`.
 
+## Local Development Environment
+
+Use the repository-local environment contract documented in `docs/DEVELOPMENT_ENV.md` and `AGENTS.md`.
+
+Default entry points:
+
+```bash
+./scripts/dev setup
+./scripts/dev doctor
+./scripts/dev test-python
+./scripts/dev test-java-protocol
+./scripts/dev build-neoforge
+```
+
+All Python, Java, Gradle, pip, and bytecode cache state should stay under `.packwise-env/`. Do not use global pip installs, system Java assumptions, or the default `~/.gradle` cache for this project.
+
 ## Current State
 
 - Project docs exist in `PROJECT_IDEA.md` and `TECHNICAL_ROUTE.md`.
