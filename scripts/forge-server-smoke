@@ -1,0 +1,595 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if [ -z "${PACKWISE_REPO_ROOT:-}" ]; then
+  # shellcheck source=env.sh
+  source "${SCRIPT_DIR}/env.sh"
+fi
+
+MINECRAFT_VERSION="1.20.1"
+FORGE_VERSION="47.4.20"
+FORGE_COORDINATE="${MINECRAFT_VERSION}-${FORGE_VERSION}"
+FORGE_INSTALLER_URL="https://maven.minecraftforge.net/net/minecraftforge/forge/${FORGE_COORDINATE}/forge-${FORGE_COORDINATE}-installer.jar"
+
+usage() {
+  cat <<'USAGE'
+Usage: ./scripts/forge-server-smoke [options]
+
+Starts a headless Forge dedicated server, loads the built Packwise Forge jar,
+runs Packwise console commands, stops the server, and validates the generated
+runtime dump.
+
+Options:
+  --server-dir PATH       Use an existing server directory instead of a cached minimal Forge server.
+                          By default this is copied to the evidence server dir before running.
+  --in-place-server       Run directly in --server-dir instead of a disposable evidence copy.
+  --server-command CMD    Command to start the existing server, run from the active server dir.
+  --artifact-dir PATH     Evidence root. Defaults to artifacts/forge-server-smoke.
+  --jar PATH              Forge connector jar. Defaults to connectors/forge/build/libs/packwise_connector-0.1.0.jar.
+  --skip-build            Do not run ./scripts/dev build-forge before starting the server.
+  --require-phase1        Require all Phase 1 dump sections during validation.
+  --instance PATH         Installed instance path for optional Phase 1 acceptance report.
+  --item-id ID            Item id passed to phase1-acceptance when --instance is set.
+  --agent-url URL         Agent URL passed to the server and optional Phase 1 report.
+  --connector-id ID       Connector id for the smoke server.
+  --pack-id ID            Pack id exposed to the connector.
+  --pack-name NAME        Pack name exposed to the connector.
+  --pack-version VERSION  Pack version exposed to the connector.
+  --timeout SECONDS       Overall command/dump timeout. Default: 240.
+  --startup-timeout SEC   Startup wait timeout. Default: 180.
+  --shutdown-timeout SEC  Shutdown wait timeout. Default: 60.
+  --memory SIZE           JVM Xms/Xmx for the cached minimal server. Default: 2G.
+  --run-id ID             Artifact run id. Defaults to UTC timestamp plus shell pid.
+USAGE
+}
+
+server_dir=""
+in_place_server=false
+server_command=""
+artifact_root="${REPO_ROOT}/artifacts/forge-server-smoke"
+connector_jar="${REPO_ROOT}/connectors/forge/build/libs/packwise_connector-0.1.0.jar"
+skip_build=false
+require_phase1=false
+instance_path=""
+item_id="minecraft:stone"
+agent_url="${PACKWISE_AGENT_URL:-}"
+connector_id="forge-smoke-${MINECRAFT_VERSION}-${FORGE_VERSION}"
+pack_id="generic-forge-1201"
+pack_name="Packwise Forge Smoke"
+pack_version="local"
+timeout_seconds=240
+startup_timeout_seconds=180
+shutdown_timeout_seconds=60
+memory_size="${PACKWISE_SMOKE_MEMORY:-2G}"
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --server-dir)
+      server_dir="$2"
+      shift 2
+      ;;
+    --in-place-server)
+      in_place_server=true
+      shift
+      ;;
+    --server-command)
+      server_command="$2"
+      shift 2
+      ;;
+    --artifact-dir)
+      artifact_root="$2"
+      shift 2
+      ;;
+    --jar)
+      connector_jar="$2"
+      shift 2
+      ;;
+    --skip-build)
+      skip_build=true
+      shift
+      ;;
+    --require-phase1)
+      require_phase1=true
+      shift
+      ;;
+    --instance)
+      instance_path="$2"
+      shift 2
+      ;;
+    --item-id)
+      item_id="$2"
+      shift 2
+      ;;
+    --agent-url)
+      agent_url="$2"
+      shift 2
+      ;;
+    --connector-id)
+      connector_id="$2"
+      shift 2
+      ;;
+    --pack-id)
+      pack_id="$2"
+      shift 2
+      ;;
+    --pack-name)
+      pack_name="$2"
+      shift 2
+      ;;
+    --pack-version)
+      pack_version="$2"
+      shift 2
+      ;;
+    --timeout)
+      timeout_seconds="$2"
+      shift 2
+      ;;
+    --startup-timeout)
+      startup_timeout_seconds="$2"
+      shift 2
+      ;;
+    --shutdown-timeout)
+      shutdown_timeout_seconds="$2"
+      shift 2
+      ;;
+    --memory)
+      memory_size="$2"
+      shift 2
+      ;;
+    --run-id)
+      run_id="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "$1 is required." >&2
+    exit 1
+  fi
+}
+
+download_file() {
+  local url="$1"
+  local dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --retry 3 --retry-delay 2 -o "${dest}" "${url}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "${dest}" "${url}"
+  else
+    echo "curl or wget is required to download the Forge installer." >&2
+    exit 1
+  fi
+}
+
+ensure_minimal_forge_server() {
+  local install_dir="$1"
+  local installer_cache="${PACKWISE_ENV_HOME}/cache/forge-${FORGE_COORDINATE}-installer.jar"
+  local install_log="${PACKWISE_ENV_HOME}/forge-server-smoke/forge-${FORGE_COORDINATE}-install.log"
+  if [ -f "${install_dir}/libraries/net/minecraftforge/forge/${FORGE_COORDINATE}/unix_args.txt" ]; then
+    return
+  fi
+
+  mkdir -p "$(dirname "${installer_cache}")" "${install_dir}" "$(dirname "${install_log}")"
+  if [ ! -f "${installer_cache}" ]; then
+    download_file "${FORGE_INSTALLER_URL}" "${installer_cache}"
+  fi
+
+  echo "Installing Forge server ${FORGE_COORDINATE} into ${install_dir}"
+  java -jar "${installer_cache}" --installServer "${install_dir}" >"${install_log}" 2>&1
+  if [ ! -f "${install_dir}/libraries/net/minecraftforge/forge/${FORGE_COORDINATE}/unix_args.txt" ]; then
+    echo "Forge server install did not produce unix_args.txt. See ${install_log}" >&2
+    exit 1
+  fi
+}
+
+write_minimal_server_properties() {
+  local path="$1"
+  cat >"${path}" <<'PROPERTIES'
+allow-flight=true
+enable-command-block=false
+enable-query=false
+enable-rcon=false
+enforce-secure-profile=false
+force-gamemode=false
+function-permission-level=4
+generate-structures=false
+level-name=world
+level-type=minecraft:flat
+max-players=1
+motd=Packwise Forge smoke
+online-mode=false
+pause-when-empty-seconds=0
+prevent-proxy-connections=false
+server-port=0
+simulation-distance=2
+spawn-protection=0
+view-distance=2
+white-list=false
+PROPERTIES
+}
+
+detect_external_server_command() {
+  local dir="$1"
+  if [ -x "${dir}/run.sh" ]; then
+    printf './run.sh nogui\n'
+    return
+  fi
+  if [ -x "${dir}/startserver.sh" ]; then
+    printf './startserver.sh nogui\n'
+    return
+  fi
+  if [ -x "${dir}/start.sh" ]; then
+    printf './start.sh nogui\n'
+    return
+  fi
+  if [ -f "${dir}/libraries/net/minecraftforge/forge/${FORGE_COORDINATE}/unix_args.txt" ]; then
+    printf 'java -Xms%s -Xmx%s @user_jvm_args.txt @libraries/net/minecraftforge/forge/%s/unix_args.txt nogui\n' "${memory_size}" "${memory_size}" "${FORGE_COORDINATE}"
+    return
+  fi
+  echo "Could not infer a server start command for ${dir}; pass --server-command." >&2
+  exit 1
+}
+
+copy_connector_jar() {
+  local mods_dir="$1"
+  local jar="$2"
+  mkdir -p "${mods_dir}"
+  local existing
+  for existing in "${mods_dir}"/packwise_connector*.jar; do
+    [ -e "${existing}" ] || continue
+    mkdir -p "${replaced_mod_dir}"
+    mv "${existing}" "${replaced_mod_dir}/$(basename "${existing}")"
+  done
+  cp "${jar}" "${mods_dir}/$(basename "${jar}")"
+  installed_connector_jar="${mods_dir}/$(basename "${jar}")"
+}
+
+restore_external_mods() {
+  if [ "${restore_mods_on_cleanup:-false}" != true ]; then
+    return
+  fi
+  if [ -n "${installed_connector_jar:-}" ] && [ -f "${installed_connector_jar}" ]; then
+    rm -f "${installed_connector_jar}"
+  fi
+  if [ -d "${replaced_mod_dir:-}" ]; then
+    local backup
+    for backup in "${replaced_mod_dir}"/*.jar; do
+      [ -e "${backup}" ] || continue
+      mv "${backup}" "${run_dir}/mods/$(basename "${backup}")"
+    done
+  fi
+}
+
+is_server_running() {
+  [ -n "${server_pid:-}" ] && kill -0 "${server_pid}" 2>/dev/null
+}
+
+stop_server_if_running() {
+  if ! is_server_running; then
+    return
+  fi
+  if [ -n "${stdin_fd_open:-}" ]; then
+    printf 'stop\n' >&3 || true
+  fi
+  local deadline=$((SECONDS + shutdown_timeout_seconds))
+  while is_server_running && [ "${SECONDS}" -lt "${deadline}" ]; do
+    sleep 1
+  done
+  if is_server_running; then
+    kill "${server_pid}" 2>/dev/null || true
+    sleep 2
+  fi
+  if is_server_running; then
+    kill -9 "${server_pid}" 2>/dev/null || true
+  fi
+}
+
+cleanup() {
+  stop_server_if_running
+  if [ -n "${stdin_fd_open:-}" ]; then
+    exec 3>&- || true
+  fi
+  restore_external_mods
+}
+trap cleanup EXIT
+
+wait_for_log() {
+  local pattern="$1"
+  local label="$2"
+  local deadline=$((SECONDS + startup_timeout_seconds))
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    if grep -q "${pattern}" "${console_log}" 2>/dev/null; then
+      return
+    fi
+    if ! is_server_running; then
+      echo "Server exited before ${label}. See ${console_log}" >&2
+      tail -n 80 "${console_log}" >&2 || true
+      exit 1
+    fi
+    sleep 2
+  done
+  echo "Timed out waiting for ${label}. See ${console_log}" >&2
+  tail -n 80 "${console_log}" >&2 || true
+  exit 1
+}
+
+send_server_command() {
+  local command="$1"
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${command}" >>"${commands_log}"
+  printf '%s\n' "${command}" >&3
+}
+
+dump_candidate_dirs() {
+  if [ ! -d "${dump_root}" ]; then
+    return 1
+  fi
+  find "${dump_root}" -mindepth 2 -maxdepth 2 -name manifest.json -printf '%T@ %h\n' \
+    | sort -nr \
+    | sed 's/^[^ ]* //'
+}
+
+dump_ready_probe() {
+  local candidate="$1"
+  DUMP_READY_STABLE_SECONDS="${PACKWISE_DUMP_READY_STABLE_SECONDS:-1}" python - "${candidate}" <<'PY'
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+NDJSON_CONTENT_TYPE = "application/x-ndjson"
+
+
+def fail(message: str) -> None:
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def safe_path_segment(value: str) -> str:
+    safe = "".join(character if character.isalnum() or character in "_-." else "_" for character in value)
+    if not safe:
+        raise ValueError("path segment must not be empty")
+    if safe in (".", ".."):
+        raise ValueError("path segment must not resolve to current or parent directory")
+    return safe
+
+
+def section_filename(section_name: str, content_type: str) -> str:
+    extension = ".ndjson" if content_type == NDJSON_CONTENT_TYPE else ".txt"
+    return safe_path_segment(section_name) + extension
+
+
+def section_paths(root: Path) -> list[Path]:
+    manifest_path = root / "manifest.json"
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        fail(f"manifest is not readable JSON: {error}")
+    if not isinstance(payload, dict):
+        fail("manifest is not a JSON object")
+    sections = payload.get("sections")
+    if not isinstance(sections, list):
+        fail("manifest sections is not a list")
+
+    paths = [manifest_path]
+    for section in sections:
+        if not isinstance(section, dict):
+            fail("manifest section is not an object")
+        name = section.get("name")
+        content_type = section.get("content_type")
+        count = section.get("count")
+        if not isinstance(name, str) or not name:
+            fail("manifest section name is missing")
+        if not isinstance(content_type, str) or not content_type:
+            fail(f"manifest section {name} content_type is missing")
+        try:
+            path = root / section_filename(name, content_type)
+        except ValueError as error:
+            fail(f"section {name} has invalid file name: {error}")
+        if not path.is_file():
+            fail(f"section {name} file is missing: {path.name}")
+        size = path.stat().st_size
+        if count != 0 and size <= 0:
+            fail(f"section {name} file is empty: {path.name}")
+        paths.append(path)
+    return paths
+
+
+def snapshot(paths: list[Path]) -> dict[str, tuple[int, int]]:
+    result = {}
+    for path in paths:
+        stat = path.stat()
+        result[str(path)] = (stat.st_size, stat.st_mtime_ns)
+    return result
+
+
+root = Path(sys.argv[1])
+paths = section_paths(root)
+before = snapshot(paths)
+time.sleep(float(os.environ.get("DUMP_READY_STABLE_SECONDS", "1")))
+paths = section_paths(root)
+after = snapshot(paths)
+if before != after:
+    fail("manifest or section size/mtime is still changing")
+PY
+}
+
+wait_for_dump_ready() {
+  local deadline=$((SECONDS + timeout_seconds))
+  local candidate=""
+  local last_wait_reason=""
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    while IFS= read -r candidate; do
+      [ -n "${candidate}" ] || continue
+      if last_wait_reason="$(dump_ready_probe "${candidate}" 2>&1)"; then
+        printf '%s\n' "${candidate}"
+        return
+      fi
+      last_wait_reason="${candidate}: ${last_wait_reason}"
+    done < <(dump_candidate_dirs || true)
+    if ! is_server_running; then
+      echo "Server exited before writing a complete dump. See ${console_log}" >&2
+      if [ -n "${last_wait_reason}" ]; then
+        echo "Last dump readiness check: ${last_wait_reason}" >&2
+      fi
+      tail -n 80 "${console_log}" >&2 || true
+      exit 1
+    fi
+    sleep 2
+  done
+  echo "Timed out waiting for a complete Packwise dump under ${dump_root}. See ${console_log}" >&2
+  if [ -n "${last_wait_reason}" ]; then
+    echo "Last dump readiness check: ${last_wait_reason}" >&2
+  fi
+  tail -n 80 "${console_log}" >&2 || true
+  exit 1
+}
+
+require_command java
+
+if [ "${skip_build}" = false ]; then
+  "${REPO_ROOT}/scripts/dev" build-forge
+fi
+if [ ! -f "${connector_jar}" ]; then
+  echo "Forge connector jar is missing: ${connector_jar}" >&2
+  echo "Run ./scripts/dev build-forge or pass --jar." >&2
+  exit 1
+fi
+
+evidence_dir="${artifact_root}/${run_id}"
+console_log="${evidence_dir}/server-console.log"
+commands_log="${evidence_dir}/commands.txt"
+validation_report="${evidence_dir}/validate-dump.json"
+phase1_report="${evidence_dir}/phase1-acceptance.json"
+dump_root="${evidence_dir}/packwise-dumps"
+replaced_mod_dir="${evidence_dir}/replaced-packwise-jars"
+restore_mods_on_cleanup=false
+mkdir -p "${evidence_dir}" "${dump_root}"
+
+external_server_dir=""
+if [ -z "${server_dir}" ]; then
+  install_dir="${PACKWISE_ENV_HOME}/forge-server-smoke/forge-${FORGE_COORDINATE}"
+  ensure_minimal_forge_server "${install_dir}"
+  run_dir="${evidence_dir}/server"
+  mkdir -p "${run_dir}"
+  ln -s "${install_dir}/libraries" "${run_dir}/libraries"
+  if [ -f "${install_dir}/user_jvm_args.txt" ]; then
+    cp "${install_dir}/user_jvm_args.txt" "${run_dir}/user_jvm_args.txt"
+  else
+    : >"${run_dir}/user_jvm_args.txt"
+  fi
+  printf 'eula=true\n' >"${run_dir}/eula.txt"
+  write_minimal_server_properties "${run_dir}/server.properties"
+  server_command="java -Xms${memory_size} -Xmx${memory_size} @user_jvm_args.txt @libraries/net/minecraftforge/forge/${FORGE_COORDINATE}/unix_args.txt nogui"
+else
+  external_server_dir="$(cd "${server_dir}" && pwd)"
+  if [ "${in_place_server}" = true ]; then
+    run_dir="${external_server_dir}"
+    restore_mods_on_cleanup=true
+  else
+    run_dir="${evidence_dir}/server"
+    mkdir -p "${run_dir}"
+    # Dereference symlinks so mutable paths such as mods/, world/, logs/, and
+    # config stay inside the disposable evidence copy.
+    cp -aL "${external_server_dir}/." "${run_dir}/"
+  fi
+  if [ -z "${server_command}" ]; then
+    server_command="$(detect_external_server_command "${run_dir}")"
+  fi
+  if [ ! -f "${run_dir}/eula.txt" ]; then
+    printf 'eula=true\n' >"${run_dir}/eula.txt"
+  elif ! grep -q '^eula=true' "${run_dir}/eula.txt"; then
+    cp "${run_dir}/eula.txt" "${evidence_dir}/eula.txt.before"
+    printf 'eula=true\n' >"${run_dir}/eula.txt"
+  fi
+fi
+
+copy_connector_jar "${run_dir}/mods" "${connector_jar}"
+
+fifo="${evidence_dir}/server.stdin"
+mkfifo "${fifo}"
+(
+  cd "${run_dir}"
+  env \
+    PACKWISE_DUMP_DIR="${dump_root}" \
+    PACKWISE_CONNECTOR_ID="${connector_id}" \
+    PACKWISE_PACK_ID="${pack_id}" \
+    PACKWISE_PACK_NAME="${pack_name}" \
+    PACKWISE_PACK_VERSION="${pack_version}" \
+    PACKWISE_AGENT_URL="${agent_url}" \
+    bash -c "${server_command}" <"${fifo}"
+) >"${console_log}" 2>&1 &
+server_pid=$!
+exec 3>"${fifo}"
+stdin_fd_open=true
+
+wait_for_log 'Done (' 'server startup'
+send_server_command 'packwise status'
+sleep 2
+send_server_command 'packwise dump'
+dump_dir="$(wait_for_dump_ready)"
+send_server_command 'stop'
+
+deadline=$((SECONDS + shutdown_timeout_seconds))
+while is_server_running && [ "${SECONDS}" -lt "${deadline}" ]; do
+  sleep 1
+done
+if is_server_running; then
+  echo "Server did not stop within ${shutdown_timeout_seconds}s; terminating. See ${console_log}" >&2
+  exit 1
+fi
+wait "${server_pid}" || true
+server_pid=""
+
+if [ -f "${run_dir}/logs/latest.log" ]; then
+  cp "${run_dir}/logs/latest.log" "${evidence_dir}/latest.log"
+fi
+
+validate_args=(validate-dump "${dump_dir}" --output "${validation_report}" --pretty)
+if [ "${require_phase1}" = true ]; then
+  validate_args+=(--require-phase1)
+fi
+python -m packwise_agent "${validate_args[@]}"
+
+if [ -n "${instance_path}" ]; then
+  server_log="${evidence_dir}/latest.log"
+  if [ ! -f "${server_log}" ]; then
+    server_log="${console_log}"
+  fi
+  phase_args=(
+    phase1-acceptance
+    --instance "${instance_path}"
+    --runtime-dir "${dump_dir}"
+    --server-log "${server_log}"
+    --item-id "${item_id}"
+    --output "${phase1_report}"
+    --pretty
+  )
+  if [ -n "${agent_url}" ]; then
+    phase_args+=(--agent-url "${agent_url}")
+  fi
+  python -m packwise_agent "${phase_args[@]}"
+fi
+
+echo "Packwise Forge server smoke passed."
+echo "evidence_dir=${evidence_dir}"
+echo "dump_dir=${dump_dir}"
+echo "validation_report=${validation_report}"
+if [ -f "${phase1_report}" ]; then
+  echo "phase1_report=${phase1_report}"
+fi

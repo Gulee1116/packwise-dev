@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if [ -z "${PACKWISE_REPO_ROOT:-}" ]; then
+  # shellcheck source=env.sh
+  source "${SCRIPT_DIR}/env.sh"
+fi
+
+usage() {
+  cat <<'USAGE'
+Usage: ./scripts/atm9sky-headless --server-dir PATH --instance PATH [options]
+
+Manual/nightly lane for a real All the Mods 9: To the Sky server pack. The
+server pack and installed client/instance files must be supplied externally;
+this script does not download or commit modpack files.
+
+Environment defaults:
+  PACKWISE_ATM9SKY_SERVER_DIR
+  PACKWISE_ATM9SKY_INSTANCE_DIR
+  PACKWISE_ATM9SKY_SERVER_COMMAND
+  PACKWISE_ATM9SKY_ITEM_ID
+  PACKWISE_AGENT_URL
+
+Options:
+  --server-dir PATH       External ATM9Sky server directory. Defaults to a disposable evidence copy.
+  --instance PATH         Installed ATM9Sky instance directory for acceptance evidence.
+  --in-place-server       Run directly in --server-dir instead of a disposable evidence copy.
+  --server-command CMD    Server start command, run from the active server directory.
+  --artifact-dir PATH     Evidence root. Defaults to artifacts/atm9sky-headless.
+  --item-id ID            Phase 1 item anchor. Default: minecraft:stone.
+  --agent-url URL         Optional agent URL for upload and online acceptance checks.
+  --skip-build            Reuse the existing Forge connector jar.
+  --timeout SECONDS       Overall command/dump timeout passed to the smoke harness.
+  --startup-timeout SEC   Startup wait timeout passed to the smoke harness.
+  --shutdown-timeout SEC  Shutdown wait timeout passed to the smoke harness.
+USAGE
+}
+
+server_dir="${PACKWISE_ATM9SKY_SERVER_DIR:-}"
+instance_path="${PACKWISE_ATM9SKY_INSTANCE_DIR:-}"
+server_command="${PACKWISE_ATM9SKY_SERVER_COMMAND:-}"
+artifact_root="${REPO_ROOT}/artifacts/atm9sky-headless"
+item_id="${PACKWISE_ATM9SKY_ITEM_ID:-minecraft:stone}"
+agent_url="${PACKWISE_AGENT_URL:-}"
+skip_build=false
+in_place_server=false
+timeout_seconds=""
+startup_timeout_seconds=""
+shutdown_timeout_seconds=""
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --server-dir)
+      server_dir="$2"
+      shift 2
+      ;;
+    --instance)
+      instance_path="$2"
+      shift 2
+      ;;
+    --in-place-server)
+      in_place_server=true
+      shift
+      ;;
+    --server-command)
+      server_command="$2"
+      shift 2
+      ;;
+    --artifact-dir)
+      artifact_root="$2"
+      shift 2
+      ;;
+    --item-id)
+      item_id="$2"
+      shift 2
+      ;;
+    --agent-url)
+      agent_url="$2"
+      shift 2
+      ;;
+    --skip-build)
+      skip_build=true
+      shift
+      ;;
+    --timeout)
+      timeout_seconds="$2"
+      shift 2
+      ;;
+    --startup-timeout)
+      startup_timeout_seconds="$2"
+      shift 2
+      ;;
+    --shutdown-timeout)
+      shutdown_timeout_seconds="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -z "${server_dir}" ]; then
+  echo "--server-dir or PACKWISE_ATM9SKY_SERVER_DIR is required." >&2
+  exit 2
+fi
+if [ -z "${instance_path}" ]; then
+  echo "--instance or PACKWISE_ATM9SKY_INSTANCE_DIR is required." >&2
+  exit 2
+fi
+if [ ! -d "${server_dir}" ]; then
+  echo "ATM9Sky server directory does not exist: ${server_dir}" >&2
+  exit 1
+fi
+if [ ! -d "${instance_path}" ]; then
+  echo "ATM9Sky instance directory does not exist: ${instance_path}" >&2
+  exit 1
+fi
+
+args=(
+  --server-dir "${server_dir}"
+  --artifact-dir "${artifact_root}"
+  --require-phase1
+  --instance "${instance_path}"
+  --item-id "${item_id}"
+  --connector-id "atm9sky-headless"
+  --pack-id "atm9sky"
+  --pack-name "All the Mods 9 - To the Sky"
+  --pack-version "external"
+)
+if [ -n "${server_command}" ]; then
+  args+=(--server-command "${server_command}")
+fi
+if [ -n "${agent_url}" ]; then
+  args+=(--agent-url "${agent_url}")
+fi
+if [ "${skip_build}" = true ]; then
+  args+=(--skip-build)
+fi
+if [ "${in_place_server}" = true ]; then
+  args+=(--in-place-server)
+fi
+if [ -n "${timeout_seconds}" ]; then
+  args+=(--timeout "${timeout_seconds}")
+fi
+if [ -n "${startup_timeout_seconds}" ]; then
+  args+=(--startup-timeout "${startup_timeout_seconds}")
+fi
+if [ -n "${shutdown_timeout_seconds}" ]; then
+  args+=(--shutdown-timeout "${shutdown_timeout_seconds}")
+fi
+
+"${REPO_ROOT}/scripts/forge-server-smoke" "${args[@]}"

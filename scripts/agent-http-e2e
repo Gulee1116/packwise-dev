@@ -1,0 +1,322 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if [ -z "${PACKWISE_REPO_ROOT:-}" ]; then
+  # shellcheck source=env.sh
+  source "${SCRIPT_DIR}/env.sh"
+fi
+
+usage() {
+  cat <<'USAGE'
+Usage: ./scripts/agent-http-e2e [options]
+
+Runs a local HTTP integration lane against the in-memory Packwise agent service:
+connector.hello, runtime dump manifest/sections, connector status, scoped
+pack-index, and query.ask.
+
+Options:
+  --artifact-dir PATH  Evidence root. Defaults to artifacts/agent-http-e2e.
+  --run-id ID          Artifact run id. Defaults to UTC timestamp plus shell pid.
+USAGE
+}
+
+artifact_root="${REPO_ROOT}/artifacts/agent-http-e2e"
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --artifact-dir)
+      artifact_root="$2"
+      shift 2
+      ;;
+    --run-id)
+      run_id="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+evidence_dir="${artifact_root}/${run_id}"
+mkdir -p "${evidence_dir}"
+
+python - "${evidence_dir}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+import threading
+import urllib.request
+from pathlib import Path
+
+from packwise_agent.http_api import make_server
+from packwise_agent.service import AgentService
+
+
+def main() -> None:
+    evidence_dir = Path(sys.argv[1])
+    connector_id = "agent-http-e2e"
+    dump_id = "dump_agent_http_e2e"
+    service = AgentService(model_name="deepseek-v4-pro")
+    server = make_server(("127.0.0.1", 0), service)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        sections = synthetic_sections()
+        hello = {
+            "protocol": "packwise.connector.v1",
+            "message_type": "connector.hello",
+            "message_id": "msg_agent_http_e2e_hello",
+            "sent_at": "2026-06-24T00:00:00Z",
+            "connector": {
+                "id": connector_id,
+                "side": "server",
+                "loader": "forge",
+                "loader_version": "47.4.20",
+                "minecraft_version": "1.20.1",
+                "pack_id": "atm9sky",
+                "pack_name": "All the Mods 9 - To the Sky",
+                "pack_version": "synthetic",
+                "connector_mod_id": "packwise_connector",
+                "connector_version": "0.1.0",
+                "capabilities": ["runtime_dump", "commands", "server_progress"],
+            },
+        }
+        write_json(evidence_dir / "hello.request.json", hello)
+        write_json(evidence_dir / "hello.response.json", post_json(f"{base}/v1/connectors/hello", hello))
+
+        manifest = {
+            "protocol": "packwise.connector.v1",
+            "message_type": "runtime_dump.manifest",
+            "message_id": "msg_agent_http_e2e_dump",
+            "sent_at": "2026-06-24T00:00:10Z",
+            "connector_id": connector_id,
+            "dump_id": dump_id,
+            "minecraft_version": "1.20.1",
+            "loader": "forge",
+            "loader_version": "47.4.20",
+            "connector_mod_id": "packwise_connector",
+            "connector_version": "0.1.0",
+            "sections": [
+                {
+                    "name": name,
+                    "content_type": "application/x-ndjson",
+                    "count": line_count(body),
+                    "sha256": sha256(body),
+                }
+                for name, body in sections.items()
+            ],
+        }
+        write_json(evidence_dir / "manifest.request.json", manifest)
+        write_json(
+            evidence_dir / "manifest.response.json",
+            post_json(f"{base}/v1/connectors/{connector_id}/runtime-dumps", manifest),
+        )
+        for name, body in sections.items():
+            (evidence_dir / f"{name}.ndjson").write_text(body, encoding="utf-8", newline="\n")
+            response = post_text(
+                f"{base}/v1/connectors/{connector_id}/runtime-dumps/{dump_id}/sections/{name}",
+                body,
+                "application/x-ndjson",
+            )
+            write_json(evidence_dir / f"{name}.response.json", response)
+
+        status = get_json(f"{base}/v1/connectors/{connector_id}")
+        index_summary = get_json(f"{base}/v1/connectors/{connector_id}/runtime-dumps/{dump_id}/index-summary")
+        pack_index = get_json(f"{base}/v1/connectors/{connector_id}/runtime-dumps/{dump_id}/pack-index")
+        ask = post_json(
+            f"{base}/v1/query/ask",
+            {
+                "protocol": "packwise.connector.v1",
+                "message_type": "query.ask",
+                "message_id": "msg_agent_http_e2e_ask",
+                "sent_at": "2026-06-24T00:00:20Z",
+                "question": "minecraft:stone 怎么做？",
+                "locale": "zh_cn",
+                "context": {
+                    "connector_id": connector_id,
+                    "dump_id": dump_id,
+                    "item_id": "minecraft:stone",
+                },
+            },
+        )
+        write_json(evidence_dir / "connector.status.json", status)
+        write_json(evidence_dir / "index-summary.json", index_summary)
+        write_json(evidence_dir / "pack-index.json", pack_index)
+        write_json(evidence_dir / "ask.response.json", ask)
+        assert_evidence(status, index_summary, pack_index, ask)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    summary = {
+        "valid": True,
+        "base_url": base,
+        "connector_id": connector_id,
+        "dump_id": dump_id,
+        "evidence_dir": str(evidence_dir),
+        "checked": [
+            "connector.hello accepted",
+            "runtime dump manifest and sections accepted",
+            "connector status reports upload_complete",
+            "scoped index-summary has runtime sections",
+            "scoped pack-index builds from uploaded dump",
+            "query.ask returns source refs",
+        ],
+    }
+    write_json(evidence_dir / "summary.json", summary)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+def synthetic_sections() -> dict[str, str]:
+    return {
+        "mods": ndjson(
+            {
+                "mod_id": "minecraft",
+                "display_name": "Minecraft",
+                "version": "1.20.1",
+                "source": "runtime:mod_list",
+            },
+            {
+                "mod_id": "packwise_connector",
+                "display_name": "Packwise Connector",
+                "version": "0.1.0",
+                "source": "runtime:mod_list",
+            },
+        ),
+        "items": ndjson(
+            registry_line("minecraft:cobblestone", "item"),
+            registry_line("minecraft:stone", "item"),
+        ),
+        "blocks": ndjson(registry_line("minecraft:stone", "block")),
+        "fluids": ndjson(registry_line("minecraft:water", "fluid")),
+        "tags": ndjson(
+            {
+                "registry": "item",
+                "tag": "forge:stone",
+                "entry_count": 1,
+                "entries": ["minecraft:stone"],
+                "source": "runtime:registry_tags",
+            }
+        ),
+        "recipes": ndjson(
+            {
+                "id": "minecraft:stonecutting/stone",
+                "type": "minecraft:stonecutting",
+                "serializer": "minecraft:stonecutting",
+                "result_item": "minecraft:stone",
+                "result_count": 1,
+                "ingredient_items": ["minecraft:cobblestone"],
+                "source": "runtime:recipe_manager",
+            }
+        ),
+        "advancements": ndjson(
+            {
+                "id": "minecraft:story/mine_stone",
+                "source": "runtime:server_advancements",
+            }
+        ),
+    }
+
+
+def registry_line(item_id: str, registry: str) -> dict[str, str]:
+    namespace, path = item_id.split(":", 1)
+    return {
+        "id": item_id,
+        "registry": registry,
+        "namespace": namespace,
+        "path": path,
+        "source": "runtime:built_in_registry",
+    }
+
+
+def ndjson(*objects: dict[str, object]) -> str:
+    return "".join(json.dumps(item, separators=(",", ":"), ensure_ascii=False) + "\n" for item in objects)
+
+
+def line_count(body: str) -> int:
+    return len([line for line in body.splitlines() if line.strip()])
+
+
+def sha256(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def post_text(url: str, body: str, content_type: str) -> dict[str, object]:
+    request = urllib.request.Request(
+        url,
+        data=body.encode("utf-8"),
+        headers={"Content-Type": content_type},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def get_json(url: str) -> dict[str, object]:
+    with urllib.request.urlopen(url, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+
+
+def assert_evidence(
+    status: dict[str, object],
+    index_summary: dict[str, object],
+    pack_index: dict[str, object],
+    ask: dict[str, object],
+) -> None:
+    runtime_dumps = status.get("runtime_dumps")
+    if not isinstance(runtime_dumps, list) or not runtime_dumps:
+        raise AssertionError("connector status did not include runtime dump evidence")
+    runtime_dump = runtime_dumps[0]
+    if not isinstance(runtime_dump, dict) or not runtime_dump.get("upload_complete"):
+        raise AssertionError("runtime dump upload was not complete")
+    summary = index_summary.get("summary")
+    if not isinstance(summary, dict) or summary.get("recipes", 0) < 1 or summary.get("items", 0) < 1:
+        raise AssertionError("index-summary did not include uploaded recipes/items")
+    if pack_index.get("schema_version") != "packwise.index.v1":
+        raise AssertionError("pack-index did not build")
+    source_policy = pack_index.get("source_policy")
+    if not isinstance(source_policy, dict):
+        raise AssertionError("pack-index source_policy missing")
+    reconciliation = source_policy.get("reconciliation")
+    if not isinstance(reconciliation, dict) or reconciliation.get("recipes") != "runtime_authoritative":
+        raise AssertionError("pack-index did not mark recipes runtime_authoritative")
+    answer = ask.get("answer")
+    if not isinstance(answer, dict):
+        raise AssertionError("query.ask did not return an answer")
+    source_refs = answer.get("source_refs")
+    if not isinstance(source_refs, list) or not source_refs:
+        raise AssertionError("query.ask answer did not include source refs")
+
+
+if __name__ == "__main__":
+    main()
+PY

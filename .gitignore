@@ -11,6 +11,8 @@ venv/
 build/
 out/
 *.class
+connectors/forge/run*/
+connectors/neoforge/run*/
 
 # IDE
 .idea/
@@ -30,8 +32,10 @@ runtime-dumps/
 Raw-stoneblock-modpack/
 local-modpacks/
 fixtures/local/
+testfiles-return-to-dev/
 *.zip
 *.mrpack
+*.tar.gz
 *.jar
 !connectors/forge/gradle/wrapper/gradle-wrapper.jar
 !connectors/neoforge/gradle/wrapper/gradle-wrapper.jar

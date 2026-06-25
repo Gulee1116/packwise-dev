@@ -16,8 +16,12 @@ Commands:
   shell               Open a shell with the project-local environment active.
   test-python         Run Python agent tests.
   test-java-protocol  Run Java protocol tests without Minecraft/NeoForge.
+  pr-fast-gate       Run the local PR gate: doctor, tests, connector builds, and diff whitespace check.
   build-forge         Run the full Forge connector Gradle build.
   build-neoforge      Run the full NeoForge connector Gradle build.
+  smoke-forge-server  Run a headless Forge dedicated-server smoke test.
+  atm9sky-headless    Run the external ATM9Sky headless validation lane.
+  agent-http-e2e      Run a local agent HTTP integration lane.
   validate-dump       Validate a local runtime dump directory.
   import-dump         Validate and import a local runtime dump through AgentService.
   build-index         Build a normalized Packwise index from an installed instance.
@@ -176,6 +180,19 @@ cmd_test_java_protocol() {
   java -cp "${out}" dev.packwise.connector.neoforge.NeoForgeModSnapshotsTest
 }
 
+cmd_pr_fast_gate() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  doctor
+  cmd_test_python
+  cmd_test_java_protocol
+  cmd_build_forge
+  cmd_build_neoforge
+  cd "${REPO_ROOT}"
+  git diff --check
+  git diff --cached --check
+}
+
 cmd_build_forge() {
   assert_local_env
   cd "${REPO_ROOT}/connectors/forge"
@@ -218,6 +235,24 @@ cmd_ask_local() {
   python -m packwise_agent ask-local "$@"
 }
 
+cmd_smoke_forge_server() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  "${REPO_ROOT}/scripts/forge-server-smoke" "$@"
+}
+
+cmd_atm9sky_headless() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  "${REPO_ROOT}/scripts/atm9sky-headless" "$@"
+}
+
+cmd_agent_http_e2e() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  "${REPO_ROOT}/scripts/agent-http-e2e" "$@"
+}
+
 command="${1:-}"
 case "${command}" in
   setup)
@@ -238,11 +273,26 @@ case "${command}" in
   test-java-protocol)
     cmd_test_java_protocol
     ;;
+  pr-fast-gate)
+    cmd_pr_fast_gate
+    ;;
   build-forge)
     cmd_build_forge
     ;;
   build-neoforge)
     cmd_build_neoforge
+    ;;
+  smoke-forge-server)
+    shift
+    cmd_smoke_forge_server "$@"
+    ;;
+  atm9sky-headless)
+    shift
+    cmd_atm9sky_headless "$@"
+    ;;
+  agent-http-e2e)
+    shift
+    cmd_agent_http_e2e "$@"
     ;;
   import-dump)
     shift
