@@ -163,6 +163,17 @@ require_command() {
   fi
 }
 
+absolute_path() {
+  case "$1" in
+    /*)
+      printf '%s\n' "$1"
+      ;;
+    *)
+      printf '%s/%s\n' "$(pwd -P)" "$1"
+      ;;
+  esac
+}
+
 download_file() {
   local url="$1"
   local dest="$2"
@@ -461,6 +472,15 @@ wait_for_dump_ready() {
 }
 
 require_command java
+
+artifact_root="$(absolute_path "${artifact_root}")"
+if [ -n "${server_dir}" ]; then
+  server_dir="$(absolute_path "${server_dir}")"
+fi
+if [ -n "${instance_path}" ]; then
+  instance_path="$(absolute_path "${instance_path}")"
+fi
+connector_jar="$(absolute_path "${connector_jar}")"
 
 if [ "${skip_build}" = false ]; then
   "${REPO_ROOT}/scripts/dev" build-forge

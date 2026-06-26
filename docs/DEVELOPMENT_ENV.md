@@ -4,6 +4,7 @@ Packwise is a mixed Python and Java project:
 
 - `apps/agent` is a standard-library Python agent harness.
 - `connectors/neoforge` is a Java/NeoForge connector and requires JDK 21.
+- The ATM9Sky client smoke runs Minecraft/Forge 1.20.1 clients with JDK 17.
 
 The project uses a repository-local environment so later agents and developers do not accidentally depend on global machine state.
 
@@ -19,6 +20,7 @@ This directory is ignored by Git and may contain:
 
 - `python/` for the Python virtual environment.
 - `jdk/` for the project-local JDK 21.
+- `jdk17/` for the project-local JDK 17 used by client smoke launchers.
 - `gradle/` for `GRADLE_USER_HOME`.
 - `pip-cache/` for pip downloads.
 - `pycache/` for Python bytecode.
@@ -34,9 +36,9 @@ From the repository root:
 ./scripts/dev setup
 ```
 
-On Linux x64, this creates the Python venv and downloads a Temurin JDK 21 into `.packwise-env/jdk`.
+On Linux x64, this creates the Python venv, downloads a Temurin JDK 21 into `.packwise-env/jdk`, and downloads a Temurin JDK 17 into `.packwise-env/jdk17`.
 
-On other platforms, install or unpack JDK 21 manually into `.packwise-env/jdk`, then run:
+On other platforms, install or unpack JDK 21 manually into `.packwise-env/jdk` and JDK 17 into `.packwise-env/jdk17`, then run:
 
 ```bash
 ./scripts/dev doctor
@@ -75,6 +77,7 @@ PACKWISE_REPO_ROOT=<repo>
 PACKWISE_ENV_HOME=<repo>/.packwise-env
 JAVA_HOME=<repo>/.packwise-env/jdk
 PACKWISE_JDK21_HOME=<repo>/.packwise-env/jdk
+PACKWISE_JDK17_HOME=<repo>/.packwise-env/jdk17
 GRADLE_USER_HOME=<repo>/.packwise-env/gradle
 PIP_CACHE_DIR=<repo>/.packwise-env/pip-cache
 PYTHONPYCACHEPREFIX=<repo>/.packwise-env/pycache

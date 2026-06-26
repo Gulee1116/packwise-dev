@@ -34,6 +34,7 @@ Default entry points:
 ```bash
 ./scripts/dev setup
 ./scripts/dev doctor
+./scripts/dev pr-fast-gate
 ./scripts/dev test-python
 ./scripts/dev test-java-protocol
 ./scripts/dev build-forge
@@ -41,6 +42,446 @@ Default entry points:
 ```
 
 All Python, Java, Gradle, pip, and bytecode cache state should stay under `.packwise-env/`. Do not use global pip installs, system Java assumptions, or the default `~/.gradle` cache for this project.
+`./scripts/dev setup` provisions both `.packwise-env/jdk` for JDK 21 builds and
+`.packwise-env/jdk17` for Java 17 Minecraft client smoke launchers.
+
+## CI/CD Integration-Test Automation Update
+
+Automation update date: 2026-06-24
+
+### Layer 1: PR Fast Gate
+
+Added `./scripts/dev pr-fast-gate` as the single local PR gate. It runs, in
+order:
+
+```bash
+./scripts/dev doctor
+./scripts/dev test-python
+./scripts/dev test-java-protocol
+./scripts/dev build-forge
+./scripts/dev build-neoforge
+git diff --check
+git diff --cached --check
+```
+
+Future agents should run:
+
+```bash
+./scripts/dev pr-fast-gate
+```
+
+Passed in this run: `./scripts/dev pr-fast-gate` completed successfully,
+including 131 Python tests, all Java protocol tests, Forge build, NeoForge
+build, `git diff --check`, and `git diff --cached --check`.
+
+Generated artifacts remain in existing ignored locations: `.packwise-env/`
+for Python/JDK/Gradle caches and connector-local `build/` directories.
+
+### Layer 2: Headless Dedicated Server Smoke Harness
+
+Added `./scripts/dev smoke-forge-server`, backed by
+`scripts/forge-server-smoke`. The default path downloads/caches the Forge
+1.20.1 / 47.4.20 installer under `.packwise-env/cache/`, installs server
+libraries under `.packwise-env/forge-server-smoke/`, creates a temporary server
+run under `artifacts/forge-server-smoke/<run-id>/server/`, copies the newly
+built Forge connector jar into `mods/`, starts the server with `nogui`, sends:
+
+```text
+packwise status
+packwise dump
+stop
+```
+
+over server stdin, copies `logs/latest.log`, and validates the generated dump.
+
+Future agents should run the minimal smoke after building the Forge jar:
+
+```bash
+./scripts/dev smoke-forge-server --require-phase1
+```
+
+For a faster harness-only rerun when the jar already exists:
+
+```bash
+./scripts/dev smoke-forge-server --skip-build --require-phase1
+```
+
+Passed in this run:
+
+```bash
+./scripts/dev smoke-forge-server --skip-build --require-phase1 --timeout 240 --startup-timeout 180 --shutdown-timeout 60
+```
+
+Evidence from the passing run:
+
+```text
+artifacts/forge-server-smoke/20260624T185448Z-3952814/
+```
+
+The validation report was `valid: true`, Forge `47.4.20`, Minecraft `1.20.1`,
+connector `packwise_connector 0.1.0`, and non-empty Phase 1 sections:
+`mods=3`, `items=1255`, `blocks=1003`, `fluids=5`, `tags=556`,
+`recipes=1174`, `advancements=1271`. Server logs also show the connector load
+line, `/packwise status` identity lines, and `/packwise dump` output with
+`connector_id`, `dump_id`, and local dump `path`.
+
+Artifacts/logs/dumps live under:
+
+```text
+artifacts/forge-server-smoke/<run-id>/
+artifacts/forge-server-smoke/<run-id>/server-console.log
+artifacts/forge-server-smoke/<run-id>/latest.log
+artifacts/forge-server-smoke/<run-id>/packwise-dumps/<dump_id>/
+artifacts/forge-server-smoke/<run-id>/validate-dump.json
+```
+
+When `--server-dir` points at an existing external server pack, the harness
+copies that directory to `artifacts/forge-server-smoke/<run-id>/server/` by
+default and runs only against the disposable copy. Symlinks are dereferenced
+during this copy so mutable paths such as `mods/`, `world/`, `logs/`, and
+`config/` do not point back to the original server directory. Replacing Packwise
+jars, accepting EULA, server-generated `world/`, `logs/`, and any server
+properties changes stay in that evidence copy. Pass `--in-place-server` only
+when the caller intentionally wants to run directly in the supplied server
+directory.
+
+Remaining limitation: this is the smallest Forge dedicated-server smoke. It
+does not prove ATM9Sky optional integrations because the smoke server only
+loads Minecraft, Forge, and Packwise.
+
+### Layer 3: GameTest Layer
+
+GameTest was investigated and skipped for this run. The current Gradle task
+surface has server runs only:
+
+```bash
+source scripts/env.sh
+cd connectors/forge
+./gradlew tasks --all | rg -i "gametest|game test|runServer|runClient"
+
+source scripts/env.sh
+cd connectors/neoforge
+./gradlew tasks --all | rg -i "gametest|game test|runServer|runClient"
+```
+
+Observed result: Forge exposes `prepareRunServer`, `prepareRunServerCompile`,
+and `runServer`; NeoForge exposes `runServer`. No `runGameTestServer`,
+GameTest source set, GameTest structure templates, or existing GameTest
+registration exists in this repo. Adding a non-vacuous GameTest for
+`ForgeRuntimeDumpCollector.collect(MinecraftServer)` would require introducing
+the Forge GameTest run configuration plus test classes and structure assets,
+then proving that task in Gradle. That is a real setup task, not a quick local
+toggle, so the dedicated-server smoke above is the verified real
+`MinecraftServer` runtime proof for now.
+
+No GameTest artifacts are generated. Future GameTest artifacts should stay
+under `artifacts/gametest/` or connector `run*/` directories ignored by Git
+(`connectors/forge/run*/` and `connectors/neoforge/run*/`).
+
+### Layer 4: ATM9Sky Headless Nightly/On-Demand Lane
+
+Added `./scripts/dev atm9sky-headless`, backed by `scripts/atm9sky-headless`.
+It reuses the Forge smoke harness against an externally supplied ATM9Sky server
+pack, copies the server pack to disposable evidence by default, copies in the
+freshly built connector jar for the run, requires Phase 1 dump validation, and
+runs `phase1-acceptance` when an installed ATM9Sky instance path is supplied.
+The original external server directory is not modified unless
+`--in-place-server` is passed.
+
+Future operators should provide the real server pack and installed instance
+outside Git, then run:
+
+```bash
+PACKWISE_ATM9SKY_SERVER_DIR="<external-atm9sky-server>" \
+PACKWISE_ATM9SKY_INSTANCE_DIR="<installed-atm9sky-instance>" \
+PACKWISE_ATM9SKY_ITEM_ID="<item-with-runtime-recipe-or-quest-ref>" \
+./scripts/dev atm9sky-headless
+```
+
+If the pack start script cannot be inferred, pass:
+
+```bash
+./scripts/dev atm9sky-headless \
+  --server-dir "<external-atm9sky-server>" \
+  --instance "<installed-atm9sky-instance>" \
+  --server-command "./startserver.sh nogui" \
+  --item-id "<item-with-runtime-recipe-or-quest-ref>"
+```
+
+For online upload evidence:
+
+```bash
+PACKWISE_AGENT_URL="<agent-url>" ./scripts/dev atm9sky-headless ...
+```
+
+For an explicitly mutable local server workspace, pass `--in-place-server`.
+This should be avoided for nightly/CI evidence because Packwise jar
+replacement, EULA changes, logs, and world writes will happen in the supplied
+server directory.
+
+Skipped in this run: no redistributable ATM9Sky server pack or installed
+instance is committed or available as an approved repo fixture, and pack
+acquisition/licensing must stay external. Expected artifacts live under:
+
+```text
+artifacts/atm9sky-headless/<run-id>/
+artifacts/atm9sky-headless/<run-id>/server/
+artifacts/atm9sky-headless/<run-id>/latest.log
+artifacts/atm9sky-headless/<run-id>/packwise-dumps/<dump_id>/
+artifacts/atm9sky-headless/<run-id>/validate-dump.json
+artifacts/atm9sky-headless/<run-id>/phase1-acceptance.json
+```
+
+### Layer 5: Headless Client/Server 联调 Lane
+
+Added `./scripts/dev atm9sky-client-server`, backed by
+`scripts/atm9sky-client-server`, as the repeatable ATM9Sky server/client smoke
+lane. It is still an external/manual lane, not a PR gate, because the repo does
+not and should not commit a real client instance, launcher files, account state,
+or modpack archives.
+
+The lane starts from the real server pack, `/opt/atm9sky` by default, copies it
+to a disposable run directory under the evidence root, copies in the current
+Forge Packwise connector jar, accepts the EULA only in the copy, and forces a
+known local `server-port` in the copied `server.properties` and
+`default-server.properties` while binding the disposable server to
+`127.0.0.1`. The Forge connector metadata declares server-side compatibility
+with clients that do not install the Packwise jar, so this lane keeps the
+connector in the disposable server copy only. It removes any copied server
+`logs/` before startup so join detection cannot match historical `latest.log`
+entries from the source pack. It then starts the server under Java 17, verifies
+the Packwise connector load line, sends `packwise status` on the server console,
+starts the supplied client launcher command under independently configured Java
+17, waits for the server/client logs to prove a localhost join or a concrete
+failure, sends post-join `say packwise-smoke` and `list` commands on the server
+console, and polls both processes plus post-join server/client log tails during
+the hold so login-after-crash and login-then-disconnect cases fail the lane.
+The lane passes only when `summary.json` has `exit_status: "passed"`,
+`client_joined: true`, and post-join `list` evidence showing at least one player
+online.
+
+Required client inputs are external:
+
+```bash
+PACKWISE_ATM9SKY_CLIENT_INSTANCE_DIR="<installed-atm9sky-client-instance>" \
+PACKWISE_ATM9SKY_CLIENT_COMMAND="<launcher command>" \
+./scripts/dev atm9sky-client-server
+```
+
+The client command may use these placeholders, which are shell-quoted before
+execution:
+
+```text
+{server_host}
+{server_port}
+{instance_dir}
+{java}
+{artifact_dir}
+```
+
+The server command exports `JAVA_HOME` and prepends
+`PACKWISE_ATM9SKY_SERVER_JAVA` to `PATH`; by default that Java is the repo-local
+`.packwise-env/jdk17/bin/java` provisioned by `./scripts/dev setup`. The
+configured server Java must report version 17, matching the ATM9Sky 1.1.9 /
+Forge 47.4.10 server expectation and preventing `./scripts/dev`'s JDK 21 build
+environment from leaking into the server runtime.
+
+The same values are also exported to the launcher process as
+`PACKWISE_SMOKE_SERVER_HOST`, `PACKWISE_SMOKE_SERVER_PORT`,
+`PACKWISE_SMOKE_CLIENT_INSTANCE`, `PACKWISE_SMOKE_CLIENT_JAVA`, and
+`PACKWISE_SMOKE_ARTIFACT_DIR`. The lane exports `JAVA_HOME` and prepends
+`PACKWISE_ATM9SKY_CLIENT_JAVA` to `PATH`; by default that Java is the
+repo-local `.packwise-env/jdk17/bin/java` provisioned by `./scripts/dev setup`.
+The configured Java must report version 17, matching the ATM9Sky 1.1.9 / Forge
+47.4.10 client expectation.
+The raw launcher command is executed but is not persisted to `summary.json` or
+`commands.log`; those artifacts store only a redacted marker with the command's
+SHA-256 fingerprint, because launcher arguments can contain account tokens.
+Recommended Prism/MultiMC-style launcher commands should use the placeholders
+instead of hard-coded paths. For example, adapt the executable path and instance
+name to the runner:
+
+```bash
+PACKWISE_ATM9SKY_CLIENT_COMMAND='prismlauncher --launch "ATM9Sky" --server {server_host}:{server_port}'
+./scripts/dev atm9sky-client-server
+```
+
+If a launcher does not expose a `--server` flag, wrap the launcher command in a
+repo-local script that consumes `PACKWISE_SMOKE_SERVER_HOST` and
+`PACKWISE_SMOKE_SERVER_PORT`; do not add UI clicking as a nightly pass
+condition.
+
+Common options and env vars:
+
+```bash
+PACKWISE_ATM9SKY_SERVER_DIR="/opt/atm9sky" \
+PACKWISE_ATM9SKY_SERVER_PORT="25565" \
+PACKWISE_ATM9SKY_SERVER_JAVA=".packwise-env/jdk17/bin/java" \
+PACKWISE_ATM9SKY_CLIENT_JAVA=".packwise-env/jdk17/bin/java" \
+PACKWISE_ATM9SKY_CLIENT_PACK_VERSION="1.1.9" \
+PACKWISE_ATM9SKY_CLIENT_MINECRAFT_VERSION="1.20.1" \
+PACKWISE_ATM9SKY_CLIENT_FORGE_VERSION="47.4.10" \
+PACKWISE_ATM9SKY_XVFB="auto" \
+./scripts/dev atm9sky-client-server
+```
+
+If the default server command cannot be inferred from `run.sh`,
+`startserver.sh`, `start.sh`, or Forge `unix_args.txt`, pass:
+
+```bash
+./scripts/dev atm9sky-client-server \
+  --server-command "./startserver.sh nogui" \
+  --client-instance "<installed-atm9sky-client-instance>" \
+  --client-command "<launcher command>"
+```
+
+If the launcher needs an explicit graceful shutdown action after the join is
+seen, pass `--client-stop-command` or set
+`PACKWISE_ATM9SKY_CLIENT_STOP_COMMAND`. Otherwise the lane terminates the
+client process during cleanup immediately after the post-join hold period
+instead of waiting for the graceful shutdown timeout.
+
+The client static preflight enforces the installation convention from
+`how-to-make-a-client.txt`: the instance must expose `mods/`, `config/`,
+`kubejs/`, and `defaultconfigs/`; include
+`mods/I18nUpdateMod-3.7.0-all.jar`; set `lang:zh_cn` in `options.txt` and, when
+present, `config/defaultsettings/Default/options.txt`; and identify ATM9Sky
+`1.1.9`, Minecraft `1.20.1`, and Forge `47.4.10` through supported launcher
+metadata such as CurseForge `manifest.json` or Prism/MultiMC `mmc-pack.json`.
+It also requires the resolved client game directory's `mods/` to contain no
+`packwise_connector*.jar`, because this lane keeps the connector server-side
+only. The `/packwise status` and `/packwise dump` client commands are not this
+lane's acceptance steps; they belong only to a separate client-side or
+integrated-server dump workflow where the matching connector was explicitly
+installed into that client instance.
+For Prism/MultiMC instance roots, static game-file checks resolve the game
+directory under `.minecraft/` when that is where `mods/`, `config/`, `kubejs/`,
+`defaultconfigs/`, and `options.txt` live.
+For launchers that keep version metadata outside the instance root, provide
+`PACKWISE_ATM9SKY_CLIENT_PACK_VERSION`,
+`PACKWISE_ATM9SKY_CLIENT_MINECRAFT_VERSION`, and
+`PACKWISE_ATM9SKY_CLIENT_FORGE_VERSION` or the matching CLI flags; the static
+report records those values as explicit evidence.
+If those inputs are missing, the lane exits non-zero with
+`exit_status: "blocked"` rather than attempting a partial client launch.
+
+Artifacts live under:
+
+```text
+artifacts/atm9sky-client-server/<run-id>/
+artifacts/atm9sky-client-server/<run-id>/server/
+artifacts/atm9sky-client-server/<run-id>/server-console.log
+artifacts/atm9sky-client-server/<run-id>/server-latest.log
+artifacts/atm9sky-client-server/<run-id>/client.log
+artifacts/atm9sky-client-server/<run-id>/client-latest.log
+artifacts/atm9sky-client-server/<run-id>/client-provided.log
+artifacts/atm9sky-client-server/<run-id>/client-static-acceptance.json
+artifacts/atm9sky-client-server/<run-id>/post-join-console-validation.json
+artifacts/atm9sky-client-server/<run-id>/diagnostics/diagnostics.json
+artifacts/atm9sky-client-server/<run-id>/diagnostics/screenshot-*.png
+artifacts/atm9sky-client-server/<run-id>/diagnostics/screenshot-*.xwd
+artifacts/atm9sky-client-server/<run-id>/commands.log
+artifacts/atm9sky-client-server/<run-id>/summary.json
+```
+
+`summary.json` always contains the required top-level fields
+`server_started`, `client_started`, `client_joined`,
+`packwise_connector_loaded`, `exit_status`, and `failure_reason`, plus nested
+server/client/static-acceptance evidence, post-join console validation, and a
+top-level `diagnostics` object. The nested server evidence records the server
+Java path and reported Java version; nested client evidence records the client
+Java path and reported Java version. A passing full smoke requires
+`client_joined: true` and post-join `list` evidence proving at least one player
+online; a blocked preflight is explicit and is not a substitute for
+server/client acceptance.
+
+The default path is CLI/console/log driven. Xvfb is a virtual display used to
+run the real Minecraft client in headless environments; it is not a UI-clicking
+acceptance layer. Screenshot capture is attempted only on failed runtime paths
+such as client launch failure, join timeout, post-join disconnect, or
+client/server crash. If an owned Xvfb display or existing `DISPLAY` is
+available, the lane tries `import`, `scrot`, `gnome-screenshot`, then `xwd` and
+writes results under `diagnostics/`. If no display or screenshot tool is
+available, `diagnostics.json` records the skipped reason without replacing the
+original `failure_reason`.
+
+Current limitation for this run: `/opt/atm9sky` and a repo-local Java 17 are
+available, and Xvfb is installed, but no real installed ATM9Sky client instance
+or configured launcher command was found in the local workspace. The implemented
+lane can therefore produce a truthful blocked summary until those external
+client inputs are supplied.
+
+Implementation/review loop notes for the ATM9Sky client/server lane:
+
+- Round 1 implementation: added post-join server-console validation with
+  redacted `list` evidence, failure-only diagnostics metadata, screenshot
+  capture under `diagnostics/`, and owned-Xvfb display startup when available.
+  Raw launcher commands remain redacted to a SHA-256 marker.
+- Round 1 independent review: no blocking issues. It found one low-severity
+  Bash status handling bug where a zero-player `list` result would fail only
+  after timeout with a less precise reason, and a local-artifact caution that
+  copied launcher/client logs may contain whatever a launcher prints even though
+  the configured launcher command itself is redacted.
+- Follow-up fix after review: preserved the post-join validation helper exit
+  status so a zero-player `list` result fails immediately with the explicit
+  no-player reason. No further implementation round is planned unless a real
+  client run exposes a new issue.
+- Round 2 fix verification: no additional edits were needed; the current script
+  already preserves the post-join validation status and the handoff note matches
+  that behavior.
+- Final independent review: no findings requiring another fix round. The review
+  re-confirmed the default CLI/console/log path, required post-join `list`
+  evidence, failure-only diagnostics, launcher command redaction, no default UI
+  clicking, and loop notes.
+- Verification evidence from this run:
+  `bash -n scripts/dev scripts/forge-server-smoke scripts/atm9sky-client-server`
+  passed; `./scripts/dev pr-fast-gate` passed; the real ATM9Sky server-only
+  smoke passed against `/opt/atm9sky` with
+  `artifacts/forge-server-smoke/verify-atm9sky-server-20260626T035942Z/validate-dump.json`
+  reporting `valid: true`; synthetic client/server runs verified preflight
+  blocked behavior, post-join `list` pass behavior, zero-player failure
+  behavior, and Xvfb screenshot diagnostics on runtime failure.
+- Current remaining limitation: this workspace still needs a real installed
+  ATM9Sky client instance and launcher command before `client_joined=true` can
+  be verified against the actual client.
+
+### Layer 6: CloudBase/Agent Integration Lane
+
+Added `./scripts/dev agent-http-e2e`, backed by `scripts/agent-http-e2e`. This
+is the local first step for the CloudBase/agent lane: it starts the in-memory
+agent HTTP service, sends `connector.hello`, uploads a synthetic runtime dump
+manifest and all Phase 1 sections over HTTP, then verifies connector status,
+scoped index summary, scoped pack index, and `query.ask` source references.
+
+Future agents should run:
+
+```bash
+./scripts/dev agent-http-e2e
+```
+
+Passed in this run:
+
+```text
+artifacts/agent-http-e2e/20260624T185339Z-3951043/summary.json
+```
+
+The summary reported `valid: true` and checked:
+
+- connector.hello accepted
+- runtime dump manifest and sections accepted
+- connector status reports `upload_complete`
+- scoped `index-summary` has runtime sections
+- scoped `pack-index` builds from the uploaded dump
+- `query.ask` returns source refs
+
+Remaining CloudBase-specific gap: durable CloudBase DB/Storage handlers,
+deployment config, auth/token policy, and stateless persistence are still not
+implemented. The local HTTP E2E proves the connector/agent protocol path only.
+Generated evidence lives under:
+
+```text
+artifacts/agent-http-e2e/<run-id>/
+```
 
 ## Current State
 

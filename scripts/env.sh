@@ -51,6 +51,10 @@ if [ -d "${PACKWISE_ENV_HOME}/jdk" ]; then
   _packwise_prepend_path PATH "${JAVA_HOME}/bin"
 fi
 
+if [ -d "${PACKWISE_ENV_HOME}/jdk17" ]; then
+  export PACKWISE_JDK17_HOME="${PACKWISE_ENV_HOME}/jdk17"
+fi
+
 unset -f _packwise_prepend_path
 unset _packwise_env_script
 unset _packwise_repo_root

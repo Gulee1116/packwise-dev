@@ -1,0 +1,1592 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+if [ -z "${PACKWISE_REPO_ROOT:-}" ]; then
+  # shellcheck source=env.sh
+  source "${SCRIPT_DIR}/env.sh"
+fi
+
+MINECRAFT_VERSION="1.20.1"
+FORGE_VERSION="47.4.10"
+FORGE_COORDINATE="${MINECRAFT_VERSION}-${FORGE_VERSION}"
+ATM9SKY_PACK_VERSION="1.1.9"
+
+usage() {
+  cat <<'USAGE'
+Usage: ./scripts/atm9sky-client-server [options]
+
+Starts a disposable copy of a real ATM9Sky server pack, launches a supplied
+ATM9Sky client launcher command under Java 17 and Xvfb when needed, waits for a
+localhost join, then writes evidence under artifacts/atm9sky-client-server.
+
+Environment defaults:
+  PACKWISE_ATM9SKY_SERVER_DIR        Defaults to /opt/atm9sky when present.
+  PACKWISE_ATM9SKY_SERVER_COMMAND    Server start command, run from the copied server dir.
+  PACKWISE_ATM9SKY_SERVER_PORT       Defaults to 25565.
+  PACKWISE_ATM9SKY_SERVER_JAVA       Defaults to .packwise-env/jdk17/bin/java,
+                                      provisioned by ./scripts/dev setup.
+  PACKWISE_ATM9SKY_CLIENT_INSTANCE_DIR
+  PACKWISE_ATM9SKY_CLIENT_COMMAND    Launcher command. Placeholders are supported:
+                                      {server_host} {server_port} {instance_dir}
+                                      {java} {artifact_dir}
+  PACKWISE_ATM9SKY_CLIENT_WORKDIR    Defaults to the client instance dir.
+  PACKWISE_ATM9SKY_CLIENT_JAVA       Defaults to .packwise-env/jdk17/bin/java,
+                                      provisioned by ./scripts/dev setup.
+  PACKWISE_ATM9SKY_CLIENT_LOG        Optional launcher/client log to copy.
+  PACKWISE_ATM9SKY_CLIENT_STOP_COMMAND
+  PACKWISE_ATM9SKY_CLIENT_PACK_VERSION
+  PACKWISE_ATM9SKY_CLIENT_MINECRAFT_VERSION
+  PACKWISE_ATM9SKY_CLIENT_FORGE_VERSION
+  PACKWISE_ATM9SKY_XVFB              auto, always, or never. Defaults to auto.
+
+Options:
+  --server-dir PATH          External ATM9Sky server directory.
+  --server-command CMD       Server start command, run from the disposable server copy.
+  --server-port PORT         Local test server port. Default: 25565.
+  --server-java PATH         Java 17 binary used/exported for the server command.
+  --artifact-dir PATH        Evidence root. Defaults to artifacts/atm9sky-client-server.
+  --run-id ID                Artifact run id. Defaults to UTC timestamp plus shell pid.
+  --client-instance PATH     Installed ATM9Sky client instance directory.
+  --client-command CMD       Client launcher command with optional placeholders.
+  --client-workdir PATH      Working directory for the client command.
+  --client-java PATH         Java 17 binary used/exported for the client command.
+  --client-log PATH          Optional existing client log path to copy into artifacts.
+  --client-stop-command CMD  Optional graceful stop command after the join is observed.
+  --client-pack-version VER  Explicit client pack version evidence. Expected: 1.1.9.
+  --client-minecraft-version VER
+                             Explicit client Minecraft version evidence. Expected: 1.20.1.
+  --client-forge-version VER Explicit client Forge version evidence. Expected: 47.4.10.
+  --xvfb auto|always|never   Virtual display strategy. Default: auto.
+  --skip-build               Reuse the existing Forge connector jar.
+  --startup-timeout SEC      Server startup wait timeout. Default: 480.
+  --join-timeout SEC         Client join wait timeout. Default: 420.
+  --shutdown-timeout SEC     Client/server shutdown wait timeout. Default: 90.
+  --post-join-seconds SEC    Seconds to keep client connected after join. Default: 10.
+USAGE
+}
+
+server_dir="${PACKWISE_ATM9SKY_SERVER_DIR:-/opt/atm9sky}"
+server_command="${PACKWISE_ATM9SKY_SERVER_COMMAND:-}"
+server_host="127.0.0.1"
+server_port="${PACKWISE_ATM9SKY_SERVER_PORT:-25565}"
+server_java="${PACKWISE_ATM9SKY_SERVER_JAVA:-${PACKWISE_JDK17_HOME:-${REPO_ROOT}/.packwise-env/jdk17}/bin/java}"
+artifact_root="${REPO_ROOT}/artifacts/atm9sky-client-server"
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+client_instance_path="${PACKWISE_ATM9SKY_CLIENT_INSTANCE_DIR:-}"
+client_command="${PACKWISE_ATM9SKY_CLIENT_COMMAND:-}"
+client_workdir="${PACKWISE_ATM9SKY_CLIENT_WORKDIR:-}"
+client_java="${PACKWISE_ATM9SKY_CLIENT_JAVA:-${PACKWISE_JDK17_HOME:-${REPO_ROOT}/.packwise-env/jdk17}/bin/java}"
+client_log_path="${PACKWISE_ATM9SKY_CLIENT_LOG:-}"
+client_stop_command="${PACKWISE_ATM9SKY_CLIENT_STOP_COMMAND:-}"
+client_pack_version="${PACKWISE_ATM9SKY_CLIENT_PACK_VERSION:-}"
+client_minecraft_version="${PACKWISE_ATM9SKY_CLIENT_MINECRAFT_VERSION:-}"
+client_forge_version="${PACKWISE_ATM9SKY_CLIENT_FORGE_VERSION:-}"
+xvfb_mode="${PACKWISE_ATM9SKY_XVFB:-auto}"
+skip_build=false
+startup_timeout_seconds=480
+join_timeout_seconds=420
+shutdown_timeout_seconds=90
+post_join_seconds=10
+connector_jar="${REPO_ROOT}/connectors/forge/build/libs/packwise_connector-0.1.0.jar"
+join_failure_pattern='lost connection|mismatched mod channel list|failed to verify username|disconnect|multiplayer\.disconnect|connection refused|timed out|incompatible|missing.*mod'
+post_join_failure_pattern='lost connection|mismatched mod channel list|failed to verify username|disconnect|disconnected|multiplayer\.disconnect|connection refused|timed out|incompatible|missing.*mod|connection reset|closed connection'
+post_join_validation_timeout_seconds=30
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --server-dir)
+      server_dir="$2"
+      shift 2
+      ;;
+    --server-command)
+      server_command="$2"
+      shift 2
+      ;;
+    --server-port)
+      server_port="$2"
+      shift 2
+      ;;
+    --server-java)
+      server_java="$2"
+      shift 2
+      ;;
+    --artifact-dir)
+      artifact_root="$2"
+      shift 2
+      ;;
+    --run-id)
+      run_id="$2"
+      shift 2
+      ;;
+    --client-instance)
+      client_instance_path="$2"
+      shift 2
+      ;;
+    --client-command)
+      client_command="$2"
+      shift 2
+      ;;
+    --client-workdir)
+      client_workdir="$2"
+      shift 2
+      ;;
+    --client-java)
+      client_java="$2"
+      shift 2
+      ;;
+    --client-log)
+      client_log_path="$2"
+      shift 2
+      ;;
+    --client-stop-command)
+      client_stop_command="$2"
+      shift 2
+      ;;
+    --client-pack-version)
+      client_pack_version="$2"
+      shift 2
+      ;;
+    --client-minecraft-version)
+      client_minecraft_version="$2"
+      shift 2
+      ;;
+    --client-forge-version)
+      client_forge_version="$2"
+      shift 2
+      ;;
+    --xvfb)
+      xvfb_mode="$2"
+      shift 2
+      ;;
+    --skip-build)
+      skip_build=true
+      shift
+      ;;
+    --startup-timeout)
+      startup_timeout_seconds="$2"
+      shift 2
+      ;;
+    --join-timeout)
+      join_timeout_seconds="$2"
+      shift 2
+      ;;
+    --shutdown-timeout)
+      shutdown_timeout_seconds="$2"
+      shift 2
+      ;;
+    --post-join-seconds)
+      post_join_seconds="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    echo "$1 is required." >&2
+    exit 1
+  fi
+}
+
+absolute_path() {
+  case "$1" in
+    "")
+      printf '\n'
+      ;;
+    /*)
+      printf '%s\n' "$1"
+      ;;
+    *)
+      printf '%s/%s\n' "$(pwd -P)" "$1"
+      ;;
+  esac
+}
+
+record_command() {
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"${commands_log}"
+}
+
+command_fingerprint() {
+  python - "$1" <<'PY'
+import hashlib
+import sys
+
+print(hashlib.sha256(sys.argv[1].encode("utf-8")).hexdigest())
+PY
+}
+
+artifact_command_marker() {
+  local command="$1"
+  if [ -z "${command}" ]; then
+    printf '\n'
+    return
+  fi
+  printf '<redacted: command configured; sha256=%s>\n' "$(command_fingerprint "${command}")"
+}
+
+shell_quote_placeholders() {
+  python - "$client_command" "$server_host" "$server_port" "$client_instance_path" "$client_java" "$evidence_dir" <<'PY'
+import shlex
+import sys
+
+command = sys.argv[1]
+replacements = {
+    "{server_host}": sys.argv[2],
+    "{server_port}": sys.argv[3],
+    "{instance_dir}": sys.argv[4],
+    "{java}": sys.argv[5],
+    "{artifact_dir}": sys.argv[6],
+}
+for key, value in replacements.items():
+    command = command.replace(key, shlex.quote(value))
+print(command)
+PY
+}
+
+write_summary() {
+  SUMMARY_JSON="${summary_json}" \
+  RUN_ID="${run_id}" \
+  EVIDENCE_DIR="${evidence_dir}" \
+  SERVER_SOURCE_DIR="${server_dir}" \
+  SERVER_RUN_DIR="${run_dir:-}" \
+  SERVER_HOST="${server_host}" \
+  SERVER_PORT="${server_port}" \
+  SERVER_JAVA="${server_java}" \
+  SERVER_JAVA_VERSION="${server_java_version:-}" \
+  CLIENT_INSTANCE_DIR="${client_instance_path}" \
+  CLIENT_WORKDIR="${client_workdir}" \
+  CLIENT_JAVA="${client_java}" \
+  CLIENT_JAVA_VERSION="${client_java_version:-}" \
+  CLIENT_COMMAND_CONFIGURED="${client_command_configured}" \
+  CLIENT_COMMAND_ARTIFACT="${client_command_artifact:-}" \
+  XVFB_MODE="${xvfb_mode}" \
+  XVFB_USED="${xvfb_used}" \
+  SERVER_STARTED="${server_started}" \
+  CLIENT_STARTED="${client_started}" \
+  CLIENT_JOINED="${client_joined}" \
+  PACKWISE_CONNECTOR_LOADED="${packwise_connector_loaded}" \
+  EXIT_STATUS="${exit_status}" \
+  FAILURE_REASON="${failure_reason}" \
+  STATIC_ACCEPTANCE_JSON="${static_acceptance_json}" \
+  SERVER_CONSOLE_LOG="${console_log}" \
+  SERVER_LATEST_LOG="${server_latest_log}" \
+  CLIENT_CONSOLE_LOG="${client_console_log}" \
+  CLIENT_LATEST_LOG="${client_latest_log}" \
+  CLIENT_PROVIDED_LOG="${client_provided_log}" \
+  COMMANDS_LOG="${commands_log}" \
+  POST_JOIN_CONSOLE_VALIDATION_JSON="${post_join_console_validation_json}" \
+  DIAGNOSTICS_JSON="${diagnostics_json}" \
+  python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+
+def env_bool(name: str) -> bool:
+    return os.environ.get(name, "false") == "true"
+
+
+def env_none(name: str) -> str | None:
+    value = os.environ.get(name, "")
+    return value or None
+
+
+def load_json(path: str | None) -> object | None:
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_file():
+        return None
+    try:
+        return json.loads(candidate.read_text(encoding="utf-8"))
+    except Exception as error:
+        return {"valid": False, "errors": [f"could not read {candidate}: {error}"]}
+
+
+def load_diagnostics(path: str | None) -> dict[str, object]:
+    loaded = load_json(path)
+    if isinstance(loaded, dict):
+        return {
+            "attempted": bool(loaded.get("attempted", False)),
+            "succeeded": bool(loaded.get("succeeded", False)),
+            "skipped": bool(loaded.get("skipped", False)),
+            "files": loaded.get("files") if isinstance(loaded.get("files"), list) else [],
+            "failure_reason": loaded.get("failure_reason") or None,
+            "artifact": str(path) if path else None,
+        }
+    return {
+        "attempted": False,
+        "succeeded": False,
+        "skipped": False,
+        "files": [],
+        "failure_reason": None,
+        "artifact": str(path) if path else None,
+    }
+
+
+summary_path = Path(os.environ["SUMMARY_JSON"])
+summary_path.parent.mkdir(parents=True, exist_ok=True)
+payload = {
+    "schema_version": "packwise.atm9sky_client_server_smoke.v1",
+    "run_id": os.environ["RUN_ID"],
+    "evidence_dir": os.environ["EVIDENCE_DIR"],
+    "server": {
+        "source_dir": os.environ["SERVER_SOURCE_DIR"],
+        "run_dir": env_none("SERVER_RUN_DIR"),
+        "host": os.environ["SERVER_HOST"],
+        "port": int(os.environ["SERVER_PORT"]),
+        "java": env_none("SERVER_JAVA"),
+        "java_version": env_none("SERVER_JAVA_VERSION"),
+        "started": env_bool("SERVER_STARTED"),
+        "packwise_connector_loaded": env_bool("PACKWISE_CONNECTOR_LOADED"),
+        "post_join_console_validation": load_json(os.environ.get("POST_JOIN_CONSOLE_VALIDATION_JSON")),
+    },
+    "client": {
+        "instance_dir": env_none("CLIENT_INSTANCE_DIR"),
+        "workdir": env_none("CLIENT_WORKDIR"),
+        "command_configured": env_bool("CLIENT_COMMAND_CONFIGURED"),
+        "command": env_none("CLIENT_COMMAND_ARTIFACT"),
+        "command_redacted": env_bool("CLIENT_COMMAND_CONFIGURED"),
+        "java": env_none("CLIENT_JAVA"),
+        "java_version": env_none("CLIENT_JAVA_VERSION"),
+        "started": env_bool("CLIENT_STARTED"),
+        "joined": env_bool("CLIENT_JOINED"),
+        "static_acceptance": load_json(os.environ.get("STATIC_ACCEPTANCE_JSON")),
+    },
+    "xvfb": {
+        "mode": os.environ["XVFB_MODE"],
+        "used": env_bool("XVFB_USED"),
+    },
+    "artifacts": {
+        "commands_log": os.environ["COMMANDS_LOG"],
+        "summary_json": str(summary_path),
+        "server_console_log": os.environ["SERVER_CONSOLE_LOG"],
+        "server_latest_log": env_none("SERVER_LATEST_LOG"),
+        "client_console_log": os.environ["CLIENT_CONSOLE_LOG"],
+        "client_latest_log": env_none("CLIENT_LATEST_LOG"),
+        "client_provided_log": env_none("CLIENT_PROVIDED_LOG"),
+        "client_static_acceptance": os.environ["STATIC_ACCEPTANCE_JSON"],
+        "post_join_console_validation": os.environ["POST_JOIN_CONSOLE_VALIDATION_JSON"],
+        "diagnostics_json": os.environ["DIAGNOSTICS_JSON"],
+    },
+    "diagnostics": load_diagnostics(os.environ.get("DIAGNOSTICS_JSON")),
+    "server_started": env_bool("SERVER_STARTED"),
+    "client_started": env_bool("CLIENT_STARTED"),
+    "client_joined": env_bool("CLIENT_JOINED"),
+    "packwise_connector_loaded": env_bool("PACKWISE_CONNECTOR_LOADED"),
+    "exit_status": os.environ["EXIT_STATUS"],
+    "failure_reason": env_none("FAILURE_REASON"),
+}
+summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+is_server_running() {
+  [ -n "${server_pid:-}" ] && kill -0 "${server_pid}" 2>/dev/null
+}
+
+is_client_running() {
+  [ -n "${client_pid:-}" ] && kill -0 "${client_pid}" 2>/dev/null
+}
+
+join_failure_log_candidates() {
+  printf '%s\n' "${console_log:-}"
+  if [ -n "${run_dir:-}" ]; then
+    printf '%s\n' "${run_dir}/logs/latest.log"
+  fi
+  printf '%s\n' "${client_console_log:-}"
+  if [ -n "${client_instance_path:-}" ]; then
+    printf '%s\n' \
+      "${client_instance_path}/logs/latest.log" \
+      "${client_instance_path}/.minecraft/logs/latest.log"
+  fi
+  if [ -n "${client_log_path:-}" ]; then
+    printf '%s\n' "${client_log_path}"
+  fi
+}
+
+record_post_join_log_offsets() {
+  : >"${post_join_log_offsets}"
+  local candidate
+  local size
+  while IFS= read -r candidate; do
+    [ -n "${candidate}" ] || continue
+    if [ -f "${candidate}" ]; then
+      size="$(wc -c <"${candidate}" | tr -d '[:space:]')"
+    else
+      size=0
+    fi
+    printf '%s\t%s\n' "${candidate}" "${size}" >>"${post_join_log_offsets}"
+  done < <(join_failure_log_candidates)
+}
+
+grep_logs_since_post_join_offsets() {
+  [ -f "${post_join_log_offsets}" ] || return 1
+  local candidate
+  local offset
+  local size
+  while IFS=$'\t' read -r candidate offset; do
+    [ -n "${candidate}" ] || continue
+    [ -f "${candidate}" ] || continue
+    case "${offset}" in
+      ''|*[!0-9]*)
+        offset=0
+        ;;
+    esac
+    size="$(wc -c <"${candidate}" | tr -d '[:space:]')"
+    if [ "${size}" -lt "${offset}" ]; then
+      offset=0
+    fi
+    if [ "${size}" -le "${offset}" ]; then
+      continue
+    fi
+    if tail -c +"$((offset + 1))" "${candidate}" | grep -Eiq "${post_join_failure_pattern}"; then
+      post_join_failure_log="${candidate}"
+      return 0
+    fi
+  done <"${post_join_log_offsets}"
+  return 1
+}
+
+grep_server_failure_after_join() {
+  local match
+  if match="$(python - "${post_join_failure_pattern}" "${console_log:-}" "${run_dir:-}/logs/latest.log" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+failure_pattern = re.compile(sys.argv[1], re.IGNORECASE)
+join_pattern = re.compile(r"logged in with entity id|joined the game", re.IGNORECASE)
+
+for raw_path in sys.argv[2:]:
+    if not raw_path:
+        continue
+    path = Path(raw_path)
+    if not path.is_file():
+        continue
+    joined = False
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        continue
+    for index, line in enumerate(lines, start=1):
+        if join_pattern.search(line):
+            joined = True
+            continue
+        if joined and failure_pattern.search(line):
+            print(f"{path}:{index}")
+            raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+  )"; then
+    post_join_failure_log="${match}"
+    return 0
+  fi
+  return 1
+}
+
+grep_post_join_failure() {
+  grep_server_failure_after_join && return 0
+  grep_logs_since_post_join_offsets
+}
+
+server_console_log_candidates() {
+  printf '%s\n' "${console_log:-}"
+  if [ -n "${run_dir:-}" ]; then
+    printf '%s\n' "${run_dir}/logs/latest.log"
+  fi
+}
+
+record_server_console_validation_offsets() {
+  : >"${post_join_console_validation_offsets}"
+  local candidate
+  local size
+  while IFS= read -r candidate; do
+    [ -n "${candidate}" ] || continue
+    if [ -f "${candidate}" ]; then
+      size="$(wc -c <"${candidate}" | tr -d '[:space:]')"
+    else
+      size=0
+    fi
+    printf '%s\t%s\n' "${candidate}" "${size}" >>"${post_join_console_validation_offsets}"
+  done < <(server_console_log_candidates)
+}
+
+collect_post_join_console_validation() {
+  python - "${post_join_console_validation_offsets}" "${post_join_console_validation_json}" <<'PY'
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+
+offsets_path = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+list_pattern = re.compile(r"There are (\d+) of a max of (\d+) players online(?::\s*(.*))?", re.IGNORECASE)
+
+
+def redacted_list_evidence(online_count: int, max_players: int) -> str:
+    return (
+        f"There are {online_count} of a max of {max_players} players online: "
+        f"<redacted player list; online_count={online_count}>"
+    )
+
+
+def read_offsets() -> list[tuple[Path, int]]:
+    result: list[tuple[Path, int]] = []
+    if not offsets_path.is_file():
+        return result
+    for raw in offsets_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not raw.strip():
+            continue
+        path_text, _, offset_text = raw.partition("\t")
+        try:
+            offset = int(offset_text)
+        except ValueError:
+            offset = 0
+        result.append((Path(path_text), max(0, offset)))
+    return result
+
+
+checked_logs: list[dict[str, object]] = []
+list_evidence: dict[str, object] | None = None
+say_seen = False
+
+for path, offset in read_offsets():
+    exists = path.is_file()
+    checked_logs.append({"path": str(path), "exists": exists, "offset": offset})
+    if not exists:
+        continue
+    try:
+        data = path.read_bytes()
+    except OSError:
+        continue
+    if len(data) < offset:
+        offset = 0
+    text = data[offset:].decode("utf-8", errors="replace")
+    if "packwise-smoke" in text:
+        say_seen = True
+    for relative_line_number, line in enumerate(text.splitlines(), start=1):
+        match = list_pattern.search(line)
+        if not match:
+            continue
+        online_count = int(match.group(1))
+        max_players = int(match.group(2))
+        list_evidence = {
+            "found": True,
+            "source": str(path),
+            "source_offset": offset,
+            "relative_line_number": relative_line_number,
+            "online_count": online_count,
+            "max_players": max_players,
+            "line_redacted": redacted_list_evidence(online_count, max_players),
+        }
+
+passed = bool(list_evidence and int(list_evidence["online_count"]) >= 1)
+if list_evidence:
+    failure_reason = None if passed else (
+        "server 'list' command reported no players online after client_joined=true"
+    )
+else:
+    list_evidence = {"found": False}
+    failure_reason = "server 'list' command output was not found after post-join validation commands"
+
+payload = {
+    "schema_version": "packwise.atm9sky_post_join_console_validation.v1",
+    "passed": passed,
+    "commands_sent": ["say packwise-smoke", "list"],
+    "list": list_evidence,
+    "say": {"sent": True, "evidence_seen": say_seen},
+    "checked_logs": checked_logs,
+    "failure_reason": failure_reason,
+}
+output_path.parent.mkdir(parents=True, exist_ok=True)
+output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+if passed:
+    raise SystemExit(0)
+if list_evidence.get("found"):
+    raise SystemExit(2)
+raise SystemExit(1)
+PY
+}
+
+validate_post_join_server_console() {
+  record_server_console_validation_offsets
+  if ! is_server_running; then
+    finish_failed "ATM9Sky server exited before post-join server console validation could send commands. See ${console_log}"
+  fi
+  send_server_command 'say packwise-smoke'
+  send_server_command 'list'
+
+  local deadline=$((SECONDS + post_join_validation_timeout_seconds))
+  local validation_status=1
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    if collect_post_join_console_validation; then
+      return
+    else
+      validation_status=$?
+    fi
+    if [ "${validation_status}" -eq 2 ]; then
+      finish_failed "ATM9Sky post-join server console validation failed: server 'list' reported no players online. See ${post_join_console_validation_json}"
+    fi
+    if ! is_server_running; then
+      finish_failed "ATM9Sky server exited before post-join server console validation completed. See ${console_log}"
+    fi
+    if ! is_client_running; then
+      finish_failed "ATM9Sky client exited before post-join server console validation completed. See ${client_console_log}"
+    fi
+    sleep 1
+  done
+
+  if collect_post_join_console_validation; then
+    return
+  else
+    validation_status=$?
+  fi
+  if [ "${validation_status}" -eq 2 ]; then
+    finish_failed "ATM9Sky post-join server console validation failed: server 'list' reported no players online. See ${post_join_console_validation_json}"
+  fi
+  finish_failed "ATM9Sky post-join server console validation did not find 'list' evidence proving at least one player online. See ${post_join_console_validation_json}"
+}
+
+write_diagnostics_report() {
+  local attempted="$1"
+  local succeeded="$2"
+  local skipped="$3"
+  local diagnostics_failure_reason="$4"
+  shift 4
+  python - "${diagnostics_json}" "${attempted}" "${succeeded}" "${skipped}" "${diagnostics_failure_reason}" "$@" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+output_path = Path(sys.argv[1])
+files = [str(Path(path)) for path in sys.argv[6:]]
+payload = {
+    "schema_version": "packwise.atm9sky_diagnostics.v1",
+    "attempted": sys.argv[2] == "true",
+    "succeeded": sys.argv[3] == "true",
+    "skipped": sys.argv[4] == "true",
+    "files": files,
+    "failure_reason": sys.argv[5] or None,
+}
+output_path.parent.mkdir(parents=True, exist_ok=True)
+output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+run_with_optional_timeout() {
+  local seconds="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${seconds}" "$@"
+  else
+    "$@"
+  fi
+}
+
+try_screenshot_tool() {
+  local display="$1"
+  local tool="$2"
+  local output="$3"
+  shift 3
+  record_command "diagnostics-screenshot ${tool} display=${display}"
+  DISPLAY="${display}" run_with_optional_timeout 15 "$@" >>"${diagnostics_capture_log}" 2>&1
+  [ -s "${output}" ]
+}
+
+run_diagnostics_if_needed() {
+  if [ "${diagnostics_done}" = true ]; then
+    return
+  fi
+  if [ "${exit_status}" != "failed" ]; then
+    return
+  fi
+  if [ "${diagnostics_context_ready}" != true ] && [ "${client_started}" != true ] && [ "${server_started}" != true ] && [ -z "${server_pid:-}" ] && [ -z "${client_pid:-}" ]; then
+    return
+  fi
+
+  diagnostics_done=true
+  mkdir -p "${diagnostics_dir}"
+  : >"${diagnostics_capture_log}"
+
+  local capture_display="${xvfb_display:-${DISPLAY:-}}"
+  if [ -z "${capture_display}" ]; then
+    if [ "${xvfb_used}" = true ]; then
+      write_diagnostics_report true false true "no parent-accessible DISPLAY is available; xvfb-run private displays cannot be captured from the harness"
+    else
+      write_diagnostics_report true false true "no DISPLAY or dedicated Xvfb display is available for screenshot diagnostics"
+    fi
+    return
+  fi
+
+  local files=()
+  local output
+  if command -v import >/dev/null 2>&1; then
+    output="${diagnostics_dir}/screenshot-import.png"
+    if try_screenshot_tool "${capture_display}" "import" "${output}" import -window root "${output}"; then
+      files+=("${output}")
+      write_diagnostics_report true true false "" "${files[@]}"
+      return
+    fi
+    rm -f "${output}"
+  fi
+  if command -v scrot >/dev/null 2>&1; then
+    output="${diagnostics_dir}/screenshot-scrot.png"
+    if try_screenshot_tool "${capture_display}" "scrot" "${output}" scrot "${output}"; then
+      files+=("${output}")
+      write_diagnostics_report true true false "" "${files[@]}"
+      return
+    fi
+    rm -f "${output}"
+  fi
+  if command -v gnome-screenshot >/dev/null 2>&1; then
+    output="${diagnostics_dir}/screenshot-gnome.png"
+    if try_screenshot_tool "${capture_display}" "gnome-screenshot" "${output}" gnome-screenshot -f "${output}"; then
+      files+=("${output}")
+      write_diagnostics_report true true false "" "${files[@]}"
+      return
+    fi
+    rm -f "${output}"
+  fi
+  if command -v xwd >/dev/null 2>&1; then
+    output="${diagnostics_dir}/screenshot-xwd.xwd"
+    if try_screenshot_tool "${capture_display}" "xwd" "${output}" xwd -root -out "${output}"; then
+      files+=("${output}")
+      write_diagnostics_report true true false "" "${files[@]}"
+      return
+    fi
+    rm -f "${output}"
+  fi
+
+  if [ ! -s "${diagnostics_capture_log}" ]; then
+    write_diagnostics_report true false true "no supported screenshot tool found: import, scrot, gnome-screenshot, or xwd"
+  else
+    write_diagnostics_report true false false "screenshot tools failed; see ${diagnostics_capture_log}"
+  fi
+}
+
+copy_runtime_logs() {
+  if [ -n "${run_dir:-}" ] && [ -f "${run_dir}/logs/latest.log" ]; then
+    cp "${run_dir}/logs/latest.log" "${server_latest_log}" || true
+  fi
+  if [ -n "${client_instance_path}" ]; then
+    local candidate
+    for candidate in \
+      "${client_instance_path}/logs/latest.log" \
+      "${client_instance_path}/.minecraft/logs/latest.log"; do
+      if [ -f "${candidate}" ]; then
+        cp "${candidate}" "${client_latest_log}" || true
+        break
+      fi
+    done
+  fi
+  if [ -n "${client_log_path}" ] && [ -f "${client_log_path}" ]; then
+    cp "${client_log_path}" "${client_provided_log}" || true
+  fi
+}
+
+stop_client_if_running() {
+  if ! is_client_running; then
+    return
+  fi
+  if [ -n "${client_stop_command}" ]; then
+    record_command "client-stop-command $(artifact_command_marker "${client_stop_command}")"
+    (
+      cd "${client_workdir}"
+      PACKWISE_SMOKE_SERVER_HOST="${server_host}" \
+      PACKWISE_SMOKE_SERVER_PORT="${server_port}" \
+      PACKWISE_SMOKE_CLIENT_INSTANCE="${client_instance_path}" \
+      PACKWISE_SMOKE_CLIENT_JAVA="${client_java}" \
+      PACKWISE_SMOKE_ARTIFACT_DIR="${evidence_dir}" \
+      bash -c "${client_stop_command}"
+    ) >>"${client_console_log}" 2>&1 || true
+    local deadline=$((SECONDS + shutdown_timeout_seconds))
+    while is_client_running && [ "${SECONDS}" -lt "${deadline}" ]; do
+      sleep 1
+    done
+  fi
+  if is_client_running; then
+    record_command "terminate-client pid=${client_pid}"
+    kill "${client_pid}" 2>/dev/null || true
+    sleep 2
+  fi
+  if is_client_running; then
+    record_command "kill-client pid=${client_pid}"
+    kill -9 "${client_pid}" 2>/dev/null || true
+  fi
+  wait "${client_pid}" 2>/dev/null || true
+  client_pid=""
+}
+
+stop_server_if_running() {
+  if ! is_server_running; then
+    return
+  fi
+  if [ "${stdin_fd_open:-false}" = true ]; then
+    record_command "server-command stop"
+    printf 'stop\n' >&3 || true
+  fi
+  local deadline=$((SECONDS + shutdown_timeout_seconds))
+  while is_server_running && [ "${SECONDS}" -lt "${deadline}" ]; do
+    sleep 1
+  done
+  if is_server_running; then
+    record_command "terminate-server pid=${server_pid}"
+    kill "${server_pid}" 2>/dev/null || true
+    sleep 2
+  fi
+  if is_server_running; then
+    record_command "kill-server pid=${server_pid}"
+    kill -9 "${server_pid}" 2>/dev/null || true
+  fi
+  wait "${server_pid}" 2>/dev/null || true
+  server_pid=""
+}
+
+cleanup() {
+  set +e
+  if [ "${exit_status}" = "running" ]; then
+    exit_status="failed"
+    failure_reason="script exited before completing the smoke"
+  fi
+  run_diagnostics_if_needed
+  copy_runtime_logs
+  stop_client_if_running
+  stop_server_if_running
+  if [ "${stdin_fd_open:-false}" = true ]; then
+    exec 3>&- || true
+    stdin_fd_open=false
+  fi
+  stop_xvfb_if_running
+  copy_runtime_logs
+  write_summary
+}
+
+finish_blocked() {
+  exit_status="blocked"
+  failure_reason="$1"
+  echo "${failure_reason}" >&2
+  exit 1
+}
+
+finish_failed() {
+  exit_status="failed"
+  failure_reason="$1"
+  echo "${failure_reason}" >&2
+  exit 1
+}
+
+finish_success() {
+  exit_status="passed"
+  failure_reason=""
+  exit 0
+}
+
+detect_external_server_command() {
+  local dir="$1"
+  if [ -x "${dir}/run.sh" ]; then
+    printf './run.sh nogui\n'
+    return
+  fi
+  if [ -x "${dir}/startserver.sh" ]; then
+    printf './startserver.sh nogui\n'
+    return
+  fi
+  if [ -x "${dir}/start.sh" ]; then
+    printf './start.sh nogui\n'
+    return
+  fi
+  if [ -f "${dir}/libraries/net/minecraftforge/forge/${FORGE_COORDINATE}/unix_args.txt" ]; then
+    printf 'java @user_jvm_args.txt @libraries/net/minecraftforge/forge/%s/unix_args.txt nogui\n' "${FORGE_COORDINATE}"
+    return
+  fi
+  return 1
+}
+
+patch_server_properties() {
+  local path="$1"
+  python - "$path" "$server_port" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+port = sys.argv[2]
+updates = {
+    "allow-flight": "true",
+    "enforce-secure-profile": "false",
+    "max-players": "1",
+    "online-mode": "false",
+    "pause-when-empty-seconds": "0",
+    "server-ip": "127.0.0.1",
+    "server-port": port,
+}
+path.parent.mkdir(parents=True, exist_ok=True)
+lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
+seen = set()
+rewritten = []
+for line in lines:
+    if not line or line.startswith("#") or "=" not in line:
+        rewritten.append(line)
+        continue
+    key, _value = line.split("=", 1)
+    if key in updates:
+        rewritten.append(f"{key}={updates[key]}")
+        seen.add(key)
+    else:
+        rewritten.append(line)
+for key, value in updates.items():
+    if key not in seen:
+        rewritten.append(f"{key}={value}")
+path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+PY
+}
+
+copy_connector_jar() {
+  local mods_dir="$1"
+  local jar="$2"
+  mkdir -p "${mods_dir}"
+  local existing
+  for existing in "${mods_dir}"/packwise_connector*.jar; do
+    [ -e "${existing}" ] || continue
+    mkdir -p "${replaced_mod_dir}"
+    mv "${existing}" "${replaced_mod_dir}/$(basename "${existing}")"
+  done
+  cp "${jar}" "${mods_dir}/$(basename "${jar}")"
+}
+
+reset_copied_server_logs() {
+  local logs_dir="$1"
+  rm -rf "${logs_dir}"
+  mkdir -p "${logs_dir}"
+}
+
+inspect_client_static() {
+  python - "$client_instance_path" "$static_acceptance_json" \
+    "$client_pack_version" "$client_minecraft_version" "$client_forge_version" <<'PY'
+from __future__ import annotations
+
+import json
+import re
+import sys
+from pathlib import Path
+from typing import Any
+
+EXPECTED_MINECRAFT = "1.20.1"
+EXPECTED_FORGE = "47.4.10"
+EXPECTED_PACK_VERSION = "1.1.9"
+EXPECTED_I18N = "I18nUpdateMod-3.7.0-all.jar"
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(read_text(path))
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def resolve_game_dir(root: Path) -> Path:
+    required = ("mods", "config", "kubejs", "defaultconfigs")
+    candidates = [root, root / ".minecraft"]
+    for candidate in candidates:
+        if all((candidate / name).is_dir() for name in required):
+            return candidate
+    for candidate in candidates:
+        if (candidate / "mods").is_dir() or (candidate / "options.txt").is_file():
+            return candidate
+    if (root / ".minecraft").is_dir():
+        return root / ".minecraft"
+    return root
+
+
+def option_value(path: Path, key: str) -> str | None:
+    if not path.is_file():
+        return None
+    for line in read_text(path).splitlines():
+        if line.startswith(f"{key}:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def detect_from_manifest(root: Path) -> dict[str, str | None]:
+    result: dict[str, str | None] = {
+        "minecraft_version": None,
+        "forge_version": None,
+        "pack_version": None,
+        "pack_name": None,
+    }
+    manifest = read_json(root / "manifest.json") or read_json(root / ".minecraft" / "manifest.json")
+    if manifest:
+        result["pack_name"] = str(manifest.get("name") or "") or None
+        result["pack_version"] = str(manifest.get("version") or "") or None
+        minecraft = manifest.get("minecraft")
+        if isinstance(minecraft, dict):
+            result["minecraft_version"] = str(minecraft.get("version") or "") or None
+            loaders = minecraft.get("modLoaders")
+            if isinstance(loaders, list):
+                for loader in loaders:
+                    if not isinstance(loader, dict):
+                        continue
+                    loader_id = str(loader.get("id") or "")
+                    match = re.fullmatch(r"forge-(.+)", loader_id)
+                    if match:
+                        result["forge_version"] = match.group(1)
+                        break
+    mmc_pack = read_json(root / "mmc-pack.json")
+    if mmc_pack:
+        components = mmc_pack.get("components")
+        if isinstance(components, list):
+            for component in components:
+                if not isinstance(component, dict):
+                    continue
+                uid = component.get("uid")
+                version = str(component.get("version") or "") or None
+                if uid == "net.minecraft":
+                    result["minecraft_version"] = result["minecraft_version"] or version
+                if uid == "net.minecraftforge":
+                    result["forge_version"] = result["forge_version"] or version
+    instance_cfg = root / "instance.cfg"
+    if instance_cfg.is_file():
+        text = read_text(instance_cfg)
+        for line in text.splitlines():
+            if line.startswith("name="):
+                result["pack_name"] = result["pack_name"] or line.split("=", 1)[1]
+    if not result["forge_version"]:
+        version_dirs = [
+            root / "versions" / f"{EXPECTED_MINECRAFT}-forge-{EXPECTED_FORGE}",
+            root / ".minecraft" / "versions" / f"{EXPECTED_MINECRAFT}-forge-{EXPECTED_FORGE}",
+        ]
+        if any(path.exists() for path in version_dirs):
+            result["forge_version"] = EXPECTED_FORGE
+    if not result["minecraft_version"]:
+        version_dirs = [
+            root / "versions" / EXPECTED_MINECRAFT,
+            root / ".minecraft" / "versions" / EXPECTED_MINECRAFT,
+        ]
+        if any(path.exists() for path in version_dirs):
+            result["minecraft_version"] = EXPECTED_MINECRAFT
+    return result
+
+
+root = Path(sys.argv[1]) if sys.argv[1] else Path("")
+output = Path(sys.argv[2])
+pack_version_override = sys.argv[3]
+minecraft_version_override = sys.argv[4]
+forge_version_override = sys.argv[5]
+checks: list[dict[str, Any]] = []
+
+
+def check(name: str, passed: bool, evidence: dict[str, Any]) -> None:
+    checks.append({"name": name, "passed": bool(passed), "evidence": evidence})
+
+
+if not sys.argv[1]:
+    report = {
+        "schema_version": "packwise.atm9sky_client_static_acceptance.v1",
+        "valid": False,
+        "instance_dir": None,
+        "checks": [
+            {
+                "name": "client_instance_configured",
+                "passed": False,
+                "evidence": {"error": "--client-instance or PACKWISE_ATM9SKY_CLIENT_INSTANCE_DIR is required"},
+            }
+        ],
+        "errors": ["client instance path is required"],
+    }
+else:
+    root = root.resolve()
+    game_dir = resolve_game_dir(root)
+    check("client_instance_exists", root.is_dir(), {"path": str(root)})
+    required_dirs = ["mods", "config", "kubejs", "defaultconfigs"]
+    present_dirs = [name for name in required_dirs if (game_dir / name).is_dir()]
+    check(
+        "how_to_required_dirs_present",
+        set(present_dirs) == set(required_dirs),
+        {"required": required_dirs, "present": present_dirs, "game_dir": str(game_dir)},
+    )
+    mods_dir = game_dir / "mods"
+    i18n_jars = sorted(path.name for path in mods_dir.glob("I18nUpdateMod-*.jar")) if mods_dir.is_dir() else []
+    check(
+        "i18n_update_mod_installed",
+        EXPECTED_I18N in i18n_jars,
+        {"expected": EXPECTED_I18N, "found": i18n_jars, "mods_dir": str(mods_dir)},
+    )
+    client_connector_jars = sorted(mods_dir.glob("packwise_connector*.jar")) if mods_dir.is_dir() else []
+    check(
+        "packwise_connector_absent_from_client_mods",
+        not client_connector_jars,
+        {
+            "expected": "absent",
+            "found": [path.name for path in client_connector_jars],
+            "paths": [str(path) for path in client_connector_jars],
+            "mods_dir": str(mods_dir),
+        },
+    )
+    options_path = game_dir / "options.txt"
+    options_lang = option_value(options_path, "lang")
+    check("options_lang_zh_cn", options_lang == "zh_cn", {"path": str(options_path), "lang": options_lang})
+    default_options = game_dir / "config" / "defaultsettings" / "Default" / "options.txt"
+    default_options_present = default_options.is_file()
+    default_lang = option_value(default_options, "lang")
+    check(
+        "defaultsettings_lang_zh_cn_when_present",
+        (not default_options_present) or default_lang == "zh_cn",
+        {"path": str(default_options), "present": default_options_present, "lang": default_lang},
+    )
+    metadata = detect_from_manifest(root)
+    metadata_sources: dict[str, str] = {}
+    if pack_version_override:
+        metadata["pack_version"] = pack_version_override
+        metadata_sources["pack_version"] = "explicit"
+    if minecraft_version_override:
+        metadata["minecraft_version"] = minecraft_version_override
+        metadata_sources["minecraft_version"] = "explicit"
+    if forge_version_override:
+        metadata["forge_version"] = forge_version_override
+        metadata_sources["forge_version"] = "explicit"
+    for key in ("pack_version", "minecraft_version", "forge_version"):
+        metadata_sources.setdefault(key, "launcher_metadata_or_instance_files")
+    pack_identity_text = " ".join(str(metadata.get(key) or "") for key in ("pack_name", "pack_version")).lower()
+    check(
+        "atm9sky_pack_version_1_1_9",
+        EXPECTED_PACK_VERSION in pack_identity_text,
+        {"expected": EXPECTED_PACK_VERSION, "metadata_sources": metadata_sources, **metadata},
+    )
+    check(
+        "minecraft_1_20_1",
+        metadata.get("minecraft_version") == EXPECTED_MINECRAFT,
+        {
+            "expected": EXPECTED_MINECRAFT,
+            "detected": metadata.get("minecraft_version"),
+            "source": metadata_sources["minecraft_version"],
+        },
+    )
+    check(
+        "forge_47_4_10",
+        metadata.get("forge_version") == EXPECTED_FORGE,
+        {
+            "expected": EXPECTED_FORGE,
+            "detected": metadata.get("forge_version"),
+            "source": metadata_sources["forge_version"],
+        },
+    )
+    errors = [item["name"] for item in checks if not item["passed"]]
+    report = {
+        "schema_version": "packwise.atm9sky_client_static_acceptance.v1",
+        "valid": not errors,
+        "instance_dir": str(root),
+        "game_dir": str(game_dir),
+        "checks": checks,
+        "errors": errors,
+    }
+
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+print("true" if report["valid"] else "false")
+PY
+}
+
+validate_client_java() {
+  if [ -z "${client_java}" ]; then
+    return 1
+  fi
+  if [ ! -x "${client_java}" ]; then
+    return 1
+  fi
+  client_java_version="$("${client_java}" -version 2>&1 | head -n 1)"
+  [[ "${client_java_version}" == *'version "17'* ]] || [[ "${client_java_version}" == *'version "1.17'* ]]
+}
+
+validate_server_java() {
+  if [ -z "${server_java}" ]; then
+    return 1
+  fi
+  if [ ! -x "${server_java}" ]; then
+    return 1
+  fi
+  server_java_version="$("${server_java}" -version 2>&1 | head -n 1)"
+  [[ "${server_java_version}" == *'version "17'* ]] || [[ "${server_java_version}" == *'version "1.17'* ]]
+}
+
+start_xvfb_if_needed() {
+  if [ "${xvfb_used}" != true ]; then
+    return
+  fi
+  if [ -n "${xvfb_display}" ] && [ -n "${xvfb_pid}" ] && kill -0 "${xvfb_pid}" 2>/dev/null; then
+    return
+  fi
+  if [ -n "${DISPLAY:-}" ] && [ "${xvfb_mode}" != "always" ]; then
+    return
+  fi
+  if ! command -v Xvfb >/dev/null 2>&1; then
+    return
+  fi
+
+  local display_num
+  for display_num in $(seq 90 190); do
+    if [ -e "/tmp/.X${display_num}-lock" ]; then
+      continue
+    fi
+    record_command "start-xvfb :${display_num}"
+    Xvfb ":${display_num}" -screen 0 1280x720x24 -nolisten tcp >"${xvfb_log}" 2>&1 &
+    xvfb_pid=$!
+    sleep 1
+    if kill -0 "${xvfb_pid}" 2>/dev/null; then
+      xvfb_display=":${display_num}"
+      return
+    fi
+    wait "${xvfb_pid}" 2>/dev/null || true
+    xvfb_pid=""
+  done
+}
+
+stop_xvfb_if_running() {
+  if [ -z "${xvfb_pid:-}" ]; then
+    return
+  fi
+  if kill -0 "${xvfb_pid}" 2>/dev/null; then
+    record_command "terminate-xvfb pid=${xvfb_pid}"
+    kill "${xvfb_pid}" 2>/dev/null || true
+    sleep 1
+  fi
+  if kill -0 "${xvfb_pid}" 2>/dev/null; then
+    record_command "kill-xvfb pid=${xvfb_pid}"
+    kill -9 "${xvfb_pid}" 2>/dev/null || true
+  fi
+  wait "${xvfb_pid}" 2>/dev/null || true
+  xvfb_pid=""
+  xvfb_display=""
+}
+
+wait_for_server_startup() {
+  local deadline=$((SECONDS + startup_timeout_seconds))
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    if grep -q 'Done (' "${console_log}" 2>/dev/null; then
+      server_started=true
+      return
+    fi
+    if ! is_server_running; then
+      tail -n 120 "${console_log}" >&2 || true
+      finish_failed "ATM9Sky server exited before startup completed. See ${console_log}"
+    fi
+    sleep 2
+  done
+  tail -n 120 "${console_log}" >&2 || true
+  finish_failed "Timed out waiting for ATM9Sky server startup. See ${console_log}"
+}
+
+refresh_packwise_loaded() {
+  if grep -q 'Packwise connector loaded' "${console_log}" 2>/dev/null; then
+    packwise_connector_loaded=true
+    return
+  fi
+  if [ -f "${run_dir}/logs/latest.log" ] && grep -q 'Packwise connector loaded' "${run_dir}/logs/latest.log"; then
+    packwise_connector_loaded=true
+  fi
+}
+
+send_server_command() {
+  local command="$1"
+  record_command "server-command ${command}"
+  printf '%s\n' "${command}" >&3
+}
+
+grep_server_join_success() {
+  local pattern='logged in with entity id|joined the game'
+  grep -Eiq "${pattern}" "${console_log}" 2>/dev/null && return 0
+  [ -f "${run_dir}/logs/latest.log" ] && grep -Eiq "${pattern}" "${run_dir}/logs/latest.log"
+}
+
+grep_join_failure() {
+  local candidate
+  while IFS= read -r candidate; do
+    [ -n "${candidate}" ] || continue
+    [ -f "${candidate}" ] || continue
+    if grep -Eiq "${join_failure_pattern}" "${candidate}"; then
+      return 0
+    fi
+  done < <(join_failure_log_candidates)
+  return 1
+}
+
+wait_for_client_join() {
+  local deadline=$((SECONDS + join_timeout_seconds))
+  local saw_join_failure=false
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    if grep_server_join_success; then
+      client_joined=true
+      return
+    fi
+    if grep_join_failure; then
+      saw_join_failure=true
+    fi
+    if ! is_client_running; then
+      copy_runtime_logs
+      if grep_server_join_success; then
+        client_joined=true
+        return
+      fi
+      if [ "${saw_join_failure}" = true ]; then
+        finish_failed "ATM9Sky client exited or disconnected before a successful join. See ${client_console_log} and ${console_log}"
+      fi
+      finish_failed "ATM9Sky client exited before joining the test server. See ${client_console_log}"
+    fi
+    if ! is_server_running; then
+      finish_failed "ATM9Sky server exited before the client joined. See ${console_log}"
+    fi
+    sleep 2
+  done
+  copy_runtime_logs
+  if grep_server_join_success; then
+    client_joined=true
+    return
+  fi
+  finish_failed "Timed out waiting for ATM9Sky client to join localhost:${server_port}. See ${client_console_log} and ${console_log}"
+}
+
+hold_after_join() {
+  record_post_join_log_offsets
+  local deadline=$((SECONDS + post_join_seconds))
+  while [ "${SECONDS}" -lt "${deadline}" ]; do
+    if ! is_server_running; then
+      finish_failed "ATM9Sky server exited during the post-join hold. See ${console_log}"
+    fi
+    if ! is_client_running; then
+      finish_failed "ATM9Sky client exited during the post-join hold. See ${client_console_log}"
+    fi
+    if grep_post_join_failure; then
+      finish_failed "ATM9Sky client/server logged a disconnect or join failure during the post-join hold. See ${post_join_failure_log}"
+    fi
+    sleep 1
+  done
+  if grep_post_join_failure; then
+    finish_failed "ATM9Sky client/server logged a disconnect or join failure during the post-join hold. See ${post_join_failure_log}"
+  fi
+}
+
+require_command java
+require_command python
+
+case "${xvfb_mode}" in
+  auto|always|never)
+    ;;
+  *)
+    echo "--xvfb must be auto, always, or never." >&2
+    exit 2
+    ;;
+esac
+
+case "${server_port}" in
+  ''|*[!0-9]*)
+    echo "--server-port must be an integer." >&2
+    exit 2
+    ;;
+esac
+
+artifact_root="$(absolute_path "${artifact_root}")"
+server_dir="$(absolute_path "${server_dir}")"
+server_java="$(absolute_path "${server_java}")"
+client_instance_path="$(absolute_path "${client_instance_path}")"
+client_workdir="$(absolute_path "${client_workdir:-${client_instance_path}}")"
+client_java="$(absolute_path "${client_java}")"
+if [ -n "${client_log_path}" ]; then
+  client_log_path="$(absolute_path "${client_log_path}")"
+fi
+connector_jar="$(absolute_path "${connector_jar}")"
+
+evidence_dir="${artifact_root}/${run_id}"
+run_dir="${evidence_dir}/server"
+console_log="${evidence_dir}/server-console.log"
+server_latest_log="${evidence_dir}/server-latest.log"
+client_console_log="${evidence_dir}/client.log"
+client_latest_log="${evidence_dir}/client-latest.log"
+client_provided_log="${evidence_dir}/client-provided.log"
+commands_log="${evidence_dir}/commands.log"
+summary_json="${evidence_dir}/summary.json"
+static_acceptance_json="${evidence_dir}/client-static-acceptance.json"
+replaced_mod_dir="${evidence_dir}/replaced-packwise-jars"
+post_join_log_offsets="${evidence_dir}/post-join-log-offsets.tsv"
+post_join_console_validation_json="${evidence_dir}/post-join-console-validation.json"
+post_join_console_validation_offsets="${evidence_dir}/post-join-console-validation-offsets.tsv"
+diagnostics_dir="${evidence_dir}/diagnostics"
+diagnostics_json="${diagnostics_dir}/diagnostics.json"
+diagnostics_capture_log="${diagnostics_dir}/screenshot-capture.log"
+xvfb_log="${evidence_dir}/xvfb.log"
+
+server_started=false
+client_started=false
+client_joined=false
+packwise_connector_loaded=false
+client_command_configured=false
+xvfb_used=false
+exit_status="running"
+failure_reason=""
+stdin_fd_open=false
+client_java_version=""
+server_java_version=""
+client_command_expanded=""
+client_command_artifact=""
+post_join_failure_log=""
+diagnostics_context_ready=false
+diagnostics_done=false
+xvfb_pid=""
+xvfb_display=""
+if [ -n "${client_command}" ]; then
+  client_command_configured=true
+fi
+
+mkdir -p "${evidence_dir}"
+: >"${commands_log}"
+: >"${console_log}"
+: >"${client_console_log}"
+trap cleanup EXIT
+
+if [ ! -d "${server_dir}" ]; then
+  finish_blocked "ATM9Sky server directory does not exist: ${server_dir}"
+fi
+
+if ! validate_server_java; then
+  finish_blocked "ATM9Sky server Java must be an executable Java 17 binary: ${server_java}"
+fi
+static_acceptance_valid="$(inspect_client_static)"
+if [ "${static_acceptance_valid}" != "true" ]; then
+  finish_blocked "ATM9Sky client instance did not pass static how-to acceptance. See ${static_acceptance_json}"
+fi
+if [ ! -d "${client_workdir}" ]; then
+  finish_blocked "ATM9Sky client workdir does not exist: ${client_workdir}"
+fi
+if ! validate_client_java; then
+  finish_blocked "ATM9Sky client Java must be an executable Java 17 binary: ${client_java}"
+fi
+if [ -z "${client_command}" ]; then
+  finish_blocked "ATM9Sky client launcher command is required via --client-command or PACKWISE_ATM9SKY_CLIENT_COMMAND."
+fi
+client_command_configured=true
+
+if [ "${xvfb_mode}" = "always" ]; then
+  if ! command -v Xvfb >/dev/null 2>&1 && ! command -v xvfb-run >/dev/null 2>&1; then
+    finish_blocked "Xvfb or xvfb-run is required when --xvfb always is used."
+  fi
+  xvfb_used=true
+elif [ "${xvfb_mode}" = "auto" ] && [ -z "${DISPLAY:-}" ] && { command -v Xvfb >/dev/null 2>&1 || command -v xvfb-run >/dev/null 2>&1; }; then
+  xvfb_used=true
+fi
+start_xvfb_if_needed
+if [ "${xvfb_used}" = true ] && [ -z "${xvfb_display}" ] && ! command -v xvfb-run >/dev/null 2>&1; then
+  finish_blocked "Could not start a dedicated Xvfb display, and xvfb-run is not available."
+fi
+
+if [ "${skip_build}" = false ]; then
+  record_command "./scripts/dev build-forge"
+  "${REPO_ROOT}/scripts/dev" build-forge
+fi
+if [ ! -f "${connector_jar}" ]; then
+  finish_blocked "Forge connector jar is missing: ${connector_jar}. Run ./scripts/dev build-forge or pass --skip-build only after building."
+fi
+
+record_command "copy-server ${server_dir} -> ${run_dir}"
+mkdir -p "${run_dir}"
+cp -aL "${server_dir}/." "${run_dir}/"
+record_command "reset-copied-server-logs ${run_dir}/logs"
+reset_copied_server_logs "${run_dir}/logs"
+printf 'eula=true\n' >"${run_dir}/eula.txt"
+patch_server_properties "${run_dir}/server.properties"
+patch_server_properties "${run_dir}/default-server.properties"
+copy_connector_jar "${run_dir}/mods" "${connector_jar}"
+
+if [ -z "${server_command}" ]; then
+  if ! server_command="$(detect_external_server_command "${run_dir}")"; then
+    finish_blocked "Could not infer a server start command for ${run_dir}; pass --server-command."
+  fi
+fi
+
+fifo="${evidence_dir}/server.stdin"
+mkfifo "${fifo}"
+record_command "start-server ${server_command}"
+(
+  cd "${run_dir}"
+  export JAVA_HOME
+  JAVA_HOME="$(cd "$(dirname "${server_java}")/.." && pwd)"
+  export PATH
+  PATH="$(dirname "${server_java}"):${PATH}"
+  env \
+    PACKWISE_CONNECTOR_ID="atm9sky-client-server" \
+    PACKWISE_PACK_ID="atm9sky" \
+    PACKWISE_PACK_NAME="All the Mods 9 - To the Sky" \
+    PACKWISE_PACK_VERSION="atm9sky-${ATM9SKY_PACK_VERSION}" \
+    bash -c "${server_command}" <"${fifo}"
+) >"${console_log}" 2>&1 &
+server_pid=$!
+diagnostics_context_ready=true
+exec 3>"${fifo}"
+stdin_fd_open=true
+
+wait_for_server_startup
+refresh_packwise_loaded
+if [ "${packwise_connector_loaded}" != true ]; then
+  finish_failed "ATM9Sky server started, but the Packwise connector load line was not seen. See ${console_log}"
+fi
+send_server_command 'packwise status'
+sleep 2
+
+start_xvfb_if_needed
+client_command_expanded="$(shell_quote_placeholders)"
+client_command_artifact="$(artifact_command_marker "${client_command_expanded}")"
+record_command "start-client ${client_command_artifact}"
+(
+  cd "${client_workdir}"
+  export JAVA_HOME
+  JAVA_HOME="$(cd "$(dirname "${client_java}")/.." && pwd)"
+  export PATH
+  PATH="$(dirname "${client_java}"):${PATH}"
+  export PACKWISE_SMOKE_SERVER_HOST="${server_host}"
+  export PACKWISE_SMOKE_SERVER_PORT="${server_port}"
+  export PACKWISE_SMOKE_CLIENT_INSTANCE="${client_instance_path}"
+  export PACKWISE_SMOKE_CLIENT_JAVA="${client_java}"
+  export PACKWISE_SMOKE_ARTIFACT_DIR="${evidence_dir}"
+  if [ "${xvfb_used}" = true ]; then
+    if [ -n "${xvfb_display}" ]; then
+      export DISPLAY="${xvfb_display}"
+      exec bash -c "${client_command_expanded}"
+    fi
+    exec xvfb-run -a -s "-screen 0 1280x720x24" bash -c "${client_command_expanded}"
+  fi
+  exec bash -c "${client_command_expanded}"
+) >"${client_console_log}" 2>&1 &
+client_pid=$!
+client_started=true
+
+wait_for_client_join
+validate_post_join_server_console
+hold_after_join
+stop_client_if_running
+stop_server_if_running
+copy_runtime_logs
+
+echo "Packwise ATM9Sky client-server smoke passed."
+echo "evidence_dir=${evidence_dir}"
+echo "summary_json=${summary_json}"
+finish_success

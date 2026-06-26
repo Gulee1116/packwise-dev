@@ -4,14 +4,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_HOME="${REPO_ROOT}/.packwise-env"
-JDK_URL="https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk"
+JDK21_URL="https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk"
+JDK17_URL="https://api.adoptium.net/v3/binary/latest/17/ga/linux/x64/jdk/hotspot/normal/eclipse?project=jdk"
 
 usage() {
   cat <<'USAGE'
 Usage: ./scripts/dev <command>
 
 Commands:
-  setup               Create/update the project-local Python venv and JDK 21.
+  setup               Create/update the project-local Python venv, JDK 21, and client JDK 17.
   doctor              Verify the active local Python, Java, and cache paths.
   shell               Open a shell with the project-local environment active.
   test-python         Run Python agent tests.
@@ -21,6 +22,8 @@ Commands:
   build-neoforge      Run the full NeoForge connector Gradle build.
   smoke-forge-server  Run a headless Forge dedicated-server smoke test.
   atm9sky-headless    Run the external ATM9Sky headless validation lane.
+  atm9sky-client-server
+                      Run the external ATM9Sky client/server smoke lane.
   agent-http-e2e      Run a local agent HTTP integration lane.
   validate-dump       Validate a local runtime dump directory.
   import-dump         Validate and import a local runtime dump through AgentService.
@@ -35,7 +38,7 @@ require_linux_x64() {
   os="$(uname -s)"
   arch="$(uname -m)"
   if [ "${os}" != "Linux" ] || [ "${arch}" != "x86_64" ]; then
-    echo "setup currently downloads a Linux x64 JDK. Install JDK 21 under ${ENV_HOME}/jdk manually on this platform." >&2
+    echo "setup currently downloads Linux x64 JDKs. Install required JDKs under ${ENV_HOME}/ manually on this platform." >&2
     exit 1
   fi
 }
@@ -48,7 +51,7 @@ download_file() {
   elif command -v wget >/dev/null 2>&1; then
     wget -O "${dest}" "${url}"
   else
-    echo "curl or wget is required to download JDK 21." >&2
+    echo "curl or wget is required to download JDKs." >&2
     exit 1
   fi
 }
@@ -66,28 +69,39 @@ setup_python() {
 }
 
 setup_jdk() {
-  if [ -x "${ENV_HOME}/jdk/bin/java" ] && "${ENV_HOME}/jdk/bin/java" -version 2>&1 | grep -q 'version "21'; then
+  local major="$1"
+  local install_dir="$2"
+  local archive_name="$3"
+  local url="$4"
+
+  if [ -x "${install_dir}/bin/java" ] && "${install_dir}/bin/java" -version 2>&1 | grep -q "version \"${major}"; then
     return
   fi
 
   require_linux_x64
-  mkdir -p "${ENV_HOME}/cache" "${ENV_HOME}/jdk-extract"
-  rm -rf "${ENV_HOME}/jdk" "${ENV_HOME}/jdk-extract"
-  mkdir -p "${ENV_HOME}/jdk-extract"
+  local extract_dir="${ENV_HOME}/jdk${major}-extract"
+  mkdir -p "${ENV_HOME}/cache" "${extract_dir}"
+  rm -rf "${install_dir}" "${extract_dir}"
+  mkdir -p "${extract_dir}"
 
-  local archive="${ENV_HOME}/cache/temurin-jdk21-linux-x64.tar.gz"
-  download_file "${JDK_URL}" "${archive}"
-  tar -xzf "${archive}" -C "${ENV_HOME}/jdk-extract"
+  local archive="${ENV_HOME}/cache/${archive_name}"
+  download_file "${url}" "${archive}"
+  tar -xzf "${archive}" -C "${extract_dir}"
 
   local extracted
-  extracted="$(find "${ENV_HOME}/jdk-extract" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  extracted="$(find "${extract_dir}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   if [ -z "${extracted}" ]; then
     echo "JDK archive did not contain an extracted directory." >&2
     exit 1
   fi
 
-  mv "${extracted}" "${ENV_HOME}/jdk"
-  rm -rf "${ENV_HOME}/jdk-extract"
+  mv "${extracted}" "${install_dir}"
+  rm -rf "${extract_dir}"
+}
+
+setup_jdks() {
+  setup_jdk 21 "${ENV_HOME}/jdk" "temurin-jdk21-linux-x64.tar.gz" "${JDK21_URL}"
+  setup_jdk 17 "${ENV_HOME}/jdk17" "temurin-jdk17-linux-x64.tar.gz" "${JDK17_URL}"
 }
 
 activate_env() {
@@ -121,7 +135,7 @@ assert_local_env() {
 cmd_setup() {
   mkdir -p "${ENV_HOME}/gradle"
   setup_python
-  setup_jdk
+  setup_jdks
   assert_local_env
   doctor
 }
@@ -137,6 +151,12 @@ doctor() {
   java -version 2>&1 | head -n 1
   printf 'javac: '
   javac -version
+  printf 'client-java17: '
+  if [ -x "${ENV_HOME}/jdk17/bin/java" ]; then
+    "${ENV_HOME}/jdk17/bin/java" -version 2>&1 | head -n 1
+  else
+    printf '<missing: run ./scripts/dev setup>\n'
+  fi
   printf 'JAVA_HOME=%s\n' "${JAVA_HOME:-}"
   printf 'GRADLE_USER_HOME=%s\n' "${GRADLE_USER_HOME:-}"
   printf 'PIP_CACHE_DIR=%s\n' "${PIP_CACHE_DIR:-}"
@@ -247,6 +267,12 @@ cmd_atm9sky_headless() {
   "${REPO_ROOT}/scripts/atm9sky-headless" "$@"
 }
 
+cmd_atm9sky_client_server() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  "${REPO_ROOT}/scripts/atm9sky-client-server" "$@"
+}
+
 cmd_agent_http_e2e() {
   assert_local_env
   cd "${REPO_ROOT}"
@@ -289,6 +315,10 @@ case "${command}" in
   atm9sky-headless)
     shift
     cmd_atm9sky_headless "$@"
+    ;;
+  atm9sky-client-server)
+    shift
+    cmd_atm9sky_client_server "$@"
     ;;
   agent-http-e2e)
     shift

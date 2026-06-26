@@ -1,0 +1,172 @@
+下面这份可以直接贴到另一个地方当安装说明。
+
+**ATM9Sky 汉化客户端测试环境安装 How-To**
+
+目标版本：
+
+```text
+Modpack: All the Mods 9 - To the Sky
+Pack version: atm9sky-1.1.9
+Minecraft: 1.20.1
+Forge: 47.4.10
+Recommended memory: 8192 MB
+Java: 17 preferred
+```
+
+需要准备的文件：
+
+```text
+All-the-Mods-9-To-the-Sky-atm9sky-1.1.9-PCL-fixed.zip
+I18nUpdateMod-3.7.0-all.jar
+```
+
+基础 client/server smoke 客户端不要安装 `packwise_connector*.jar`。这个联调 lane
+把 Packwise connector 只放进一次性的 server copy，客户端保持原始 ATM9Sky 客户端
+兼容面，避免因为 client/server 两侧同时加载不同 connector jar 造成冲突。
+
+`PCL-fixed.zip` 是基于官方 CurseForge 包改的测试用包：移除了会导致 PCL 下载 403 的 `moreoverlays` manifest 条目，并把对应 jar 放进 `overrides/mods/`。如果不用 PCL，也可以用官方 zip，但 CI 环境建议用 fixed 版，减少外部 CDN 失败。
+
+安装步骤：
+
+1. 准备 Java 17。
+
+   确认：
+
+   ```bash
+   java -version
+   ```
+
+   推荐输出是 Java 17。Java 21 可能能跑，但 Forge 1.20.1 更建议 Java 17。
+
+2. 用启动器导入整合包。
+
+   在 HMCL / PCL2 / Prism / CurseForge App 里导入：
+
+   ```text
+   All-the-Mods-9-To-the-Sky-atm9sky-1.1.9-PCL-fixed.zip
+   ```
+
+   让启动器自动下载：
+
+   ```text
+   Minecraft 1.20.1
+   Forge 47.4.10
+   mod libraries
+   assets
+   ```
+
+3. 打开导入后的实例目录。
+
+   实例根目录记为：
+
+   ```text
+   <ATM9Sky-instance>
+   ```
+
+   典型结构应包含：
+
+   ```text
+   <ATM9Sky-instance>/mods/
+   <ATM9Sky-instance>/config/
+   <ATM9Sky-instance>/kubejs/
+   <ATM9Sky-instance>/defaultconfigs/
+   ```
+
+4. 安装汉化更新模组。
+
+   把：
+
+   ```text
+   I18nUpdateMod-3.7.0-all.jar
+   ```
+
+   放到：
+
+   ```text
+   <ATM9Sky-instance>/mods/
+   ```
+
+5. 设置默认语言为简体中文。
+
+   创建或修改：
+
+   ```text
+   <ATM9Sky-instance>/options.txt
+   ```
+
+   确保包含：
+
+   ```text
+   lang:zh_cn
+   ```
+
+   如果存在 DefaultSettings 配置，也同步改：
+
+   ```text
+   <ATM9Sky-instance>/config/defaultsettings/Default/options.txt
+   ```
+
+   同样设置：
+
+   ```text
+   lang:zh_cn
+   ```
+
+6. CI/CD 环境建议缓存这些目录。
+
+   ```text
+   .minecraft/libraries/
+   .minecraft/assets/
+   .minecraft/versions/1.20.1/
+   .minecraft/versions/1.20.1-forge-47.4.10/
+   <ATM9Sky-instance>/mods/
+   ```
+
+   这样后续任务不会每次重新拉 300+ 个 mod。
+
+7. 基础 client/server smoke 验证。
+
+   启动一次客户端，确认主菜单能进入，不报缺 mod。
+
+   用这个客户端连接 `scripts/atm9sky-client-server` 启动的本地测试服务器时，
+   不要把 `packwise_connector*.jar` 放进客户端 `mods/`。本 lane 的验收是客户端
+   能稳定加入本地 ATM9Sky server，并由 server 侧 connector 证明加载状态；不要把
+   `/packwise status` 或 `/packwise dump` 当作这个 lane 的客户端验收步骤。
+
+8. 可选：单独的 client-side / integrated-server dump workflow。
+
+   只有在你明确要做单机/集成服 runtime dump，并且已经把对应版本的
+   `packwise_connector*.jar` 安装进这个客户端实例时，才进入本地单人世界或测试
+   世界后执行：
+
+   ```text
+   /packwise status
+   /packwise dump
+   ```
+
+   预期生成：
+
+   ```text
+   <ATM9Sky-instance>/packwise-dumps/<dump_id>/
+   ```
+
+9. 验证可选 dump 输出文件。
+
+   如果执行了上面的可选 dump workflow，dump 目录至少应包含：
+
+   ```text
+   manifest.json
+   mods.ndjson
+   items.ndjson
+   blocks.ndjson
+   fluids.ndjson
+   tags.ndjson
+   recipes.ndjson
+   advancements.ndjson
+   ```
+
+注意事项：
+
+- 不要把 `saves/`、账号文件、服务器配置、白名单、ops 等内容放进 CI artifact。
+- 如果启动器仍然卡在 CurseForge 403，优先使用 `PCL-fixed.zip`，不要用原始官方 zip。
+- 如果 CI 是无图形环境，Minecraft 客户端本身通常仍需要图形上下文；建议用带桌面会话或虚拟显示的 runner。
