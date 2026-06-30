@@ -17,6 +17,10 @@
 - mod 不依赖系统 Python。
 - mod 只负责 runtime 事实、命令、同步、dump。
 - agent service 负责索引、RAG/KG、模型调用、路线规划和记忆。
+- connector 只配置 Packwise backend 地址；不要在 Minecraft server 或
+  connector 配置 `PACKWISE_LLM_*` 或模型供应商 API key。集中式部署中只有
+  backend 调用 OpenAI-compatible 模型服务，backend 模型名使用
+  `PACKWISE_LLM_MODEL=deepseek-v4-pro`。
 
 本地协议测试：
 

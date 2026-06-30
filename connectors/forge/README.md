@@ -6,12 +6,20 @@ first validation target.
 The connector keeps pack-specific identity outside code. Configure these
 optional JVM properties or environment variables on the server:
 
-- `packwise.agentUrl` / `PACKWISE_AGENT_URL`
+- `packwise.agentUrl` / `PACKWISE_BACKEND_BASE_URL` / `PACKWISE_AGENT_BASE_URL` / `PACKWISE_AGENT_URL`
 - `packwise.dumpDir` / `PACKWISE_DUMP_DIR`
 - `packwise.connectorId` / `PACKWISE_CONNECTOR_ID`
 - `packwise.packId` / `PACKWISE_PACK_ID`
 - `packwise.packName` / `PACKWISE_PACK_NAME`
 - `packwise.packVersion` / `PACKWISE_PACK_VERSION`
+
+`PACKWISE_BACKEND_BASE_URL` and `PACKWISE_AGENT_BASE_URL` are Packwise backend
+URLs, not model provider URLs. `PACKWISE_AGENT_URL` remains a legacy alias for
+the same backend address.
+Do not configure `PACKWISE_LLM_BASE_URL`, `PACKWISE_LLM_MODEL`, or
+`PACKWISE_LLM_API_KEY` on the Minecraft server. In centralized deployments,
+only the Packwise backend talks to the OpenAI-compatible model provider, and
+`PACKWISE_LLM_MODEL` on that backend should be `deepseek-v4-pro`.
 
 If pack identity is not configured, the connector tries to infer it from common
 server-side metadata files in the working directory: `modpackinfo.json`,
@@ -24,8 +32,11 @@ Commands:
 - `/packwise dump`
 - `/packwise ask <question>`
 
-`/packwise dump` collects mods, items, blocks, fluids, tags, recipes, and
-advancements. If an agent URL is configured it uploads the runtime dump through
+`/packwise dump` collects mods, items, blocks, fluids, tags, recipes, potions,
+mob effects, and advancements. Recipe rows include `ingredient_slots` in
+addition to the backward-compatible de-duplicated `ingredient_items`, so special
+crafting recipes can preserve slot counts, NBT candidates, and shaped dimensions
+when available. If an agent URL is configured it uploads the runtime dump through
 the shared connector protocol, sending `connector.hello` before the dump
 manifest so the agent has loader, pack, and capability context. It always writes
 a local dump first; by default that is under `packwise-dumps/<dump_id>/`
@@ -68,7 +79,8 @@ writing the remaining runtime recipes instead of failing the whole dump.
 
 `/packwise ask` sends a `query.ask` request to the configured agent. After a
 successful `/packwise dump` upload, the connector includes that dump ID in ask
-context so answers can cite runtime recipes, tags, and advancements. When the
+context so answers can cite runtime recipes, tags, potions, mob effects, and
+advancements. When the
 command source is a player, the connector also includes `player_id` and
 `player_name` so the agent can scope runtime progress to that player or team
 instead of using aggregate server progress. The command prints the answer
@@ -126,8 +138,9 @@ instance and runtime dump.
   --pretty
 ```
 
-Only pass `--agent-url` when the server used `PACKWISE_AGENT_URL` or
-`-Dpackwise.agentUrl` and the upload succeeded. With that option, the acceptance
+Only pass `--agent-url` when the server used `PACKWISE_BACKEND_BASE_URL`,
+`PACKWISE_AGENT_BASE_URL`, legacy `PACKWISE_AGENT_URL`, or `-Dpackwise.agentUrl`
+and the upload succeeded. With that option, the acceptance
 report checks the running agent's `GET /v1/connectors/<connector_id>` response
 for the same accepted hello context and dump ID, verifies every declared section
 uploaded, then checks the scoped `pack-index` endpoint for a

@@ -157,7 +157,8 @@ pack index creation:
   --pretty
 ```
 
-If `PACKWISE_AGENT_URL` was configured for the server and `/packwise dump`
+If `PACKWISE_BACKEND_BASE_URL`, `PACKWISE_AGENT_BASE_URL`, or legacy
+`PACKWISE_AGENT_URL` was configured for the server and `/packwise dump`
 uploaded successfully, include the running agent URL in the same report:
 
 ```bash

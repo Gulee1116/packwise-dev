@@ -66,16 +66,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-agent.ps1
 
 不启动游戏的已安装实例只读检查：
 
-```powershell
-$env:PYTHONPATH = "$PWD\apps\agent"
-python -m packwise_agent inspect "<installed-instance>" --pretty
+```bash
+./scripts/dev inspect "<installed-instance>" --pretty
 ```
 
 不启动游戏的 FTB Quests 任务书骨架抽取：
 
-```powershell
-$env:PYTHONPATH = "$PWD\apps\agent"
-python -m packwise_agent inspect-quests "<installed-instance>" --output ".\artifacts\stoneblock4-quests-skeleton.json" --pretty
+```bash
+./scripts/dev inspect-quests "<installed-instance>" --output "artifacts/stoneblock4-quests-skeleton.json" --pretty
 ```
 
 从静态检查和 runtime dump section 文件构建规范化 Packwise index：
@@ -89,9 +87,9 @@ python -m packwise_agent inspect-quests "<installed-instance>" --output ".\artif
 
 `validate-dump --require-phase1` 会校验 manifest、section count/hash、Phase 1 section 是否齐全，并要求 `mods`、`items`、`blocks`、`fluids`、`tags`、`recipes`、`advancements` 全部非空；当 registry section 存在时，还会校验 recipes/tags 和 FTB quest item refs 引用的 runtime item/block/fluid 是否存在；当 optional progression section 存在时，还会校验 typed quest dependencies、completed quest refs 和 player stage refs 的一致性。`ask-local` 默认使用同样的 Phase 1 runtime 要求；仅探索不完整 dump 时可追加 `--allow-partial-runtime`。
 
-Forge connector 的 `/packwise dump` 会在服务器工作目录下写出 `packwise-dumps/<dump_id>/manifest.json` 和各 section 的 `*.ndjson` 文件；配置 `PACKWISE_AGENT_URL` 时会同时上传给 agent。
+Forge connector 的 `/packwise dump` 会在服务器工作目录下写出 `packwise-dumps/<dump_id>/manifest.json` 和各 section 的 `*.ndjson` 文件；配置 `PACKWISE_BACKEND_BASE_URL` 或 `PACKWISE_AGENT_BASE_URL` 时会同时上传给 backend；`PACKWISE_AGENT_URL` 仍作为兼容旧脚本的 backend 地址别名。
 `import-dump` 会使用和 HTTP 上传一致的 AgentService manifest/section handler 导入本地 dump；带 `--instance` 时还会导入静态检查和任务书上下文，并返回同一内存态 service 构建出的 Packwise index 摘要。
-Agent 侧 runtime index 支持 Phase 1 核心 section，也支持可选的 `ftb_quests`、`player_progress`、`team_progress`、`stages`，这些可选 section 会提升进度/解锁/阻塞问题的 readiness。
+Agent 侧 runtime index 支持 Phase 1 核心 section，也支持 `potions`、`mob_effects` 语义 section，以及可选的 `ftb_quests`、`player_progress`、`team_progress`、`stages`；这些 section 会提升药水/效果路线、进度/解锁/阻塞问题的 readiness。
 Forge 侧 recipe dump 会尽量写出 `ingredient_items`，agent 可据此回答基础“缺哪些材料”问题；如果服务器加载了 FTB Quests、FTB Teams 或 GameStages，Forge connector 会通过 soft-linked reflection 尝试写出 quest/progress/stage optional sections。复杂机器链仍需要任务和进度 section 补充。
 ATM9Sky Phase 1 真实服务器验收必须在运行过 `/packwise status` 和 `/packwise dump` 后执行 `phase1-acceptance`，详见 `docs/ATM9SKY_PHASE1_ACCEPTANCE.md`。
 
@@ -109,19 +107,46 @@ NeoForge connector 完整构建：
 
 ## 启动轻量 Agent Service
 
-```powershell
-cd .\apps\agent
-$env:PACKWISE_LLM_MODEL = "deepseek-v4-pro"
-$env:PACKWISE_LLM_BASE_URL = "https://api.deepseek.com"
-$env:DEEPSEEK_API_KEY = "<your-api-key>"
-python -m packwise_agent --host 127.0.0.1 --port 8765
+Packwise 采用集中式后端推理拓扑：
+
+- Minecraft server connector 只配置 Packwise backend 地址，例如 `PACKWISE_BACKEND_BASE_URL="http://<packwise-backend-host>:8765"`；Forge connector 也接受 `PACKWISE_AGENT_BASE_URL` 和 legacy `PACKWISE_AGENT_URL` 作为别名。
+- 未来用户客户端只配置 Packwise backend 地址，例如 `PACKWISE_BACKEND_BASE_URL="http://<packwise-backend-host>:8765"`。
+- 只有 Packwise backend 配置并调用 OpenAI-compatible 模型服务。
+- 模型 API key 只放在 backend 环境里，不放在 Minecraft server、connector、客户端或示例配置里。
+
+Backend 启动示例：
+
+```bash
+PACKWISE_LLM_MODEL="deepseek-v4-pro" \
+PACKWISE_LLM_BASE_URL="https://<model-provider-host>/v1" \
+PACKWISE_LLM_API_KEY="<backend-side-secret>" \
+./scripts/dev serve --host 127.0.0.1 --port 8765
 ```
 
-需要实际调用 DeepSeek/OpenAI-compatible API 时加：
+需要实际调用 OpenAI-compatible API 时加：
 
-```powershell
-python -m packwise_agent --host 127.0.0.1 --port 8765 --enable-llm
+```bash
+PACKWISE_LLM_MODEL="deepseek-v4-pro" \
+PACKWISE_LLM_BASE_URL="https://<model-provider-host>/v1" \
+PACKWISE_LLM_API_KEY="<backend-side-secret>" \
+./scripts/dev serve --host 127.0.0.1 --port 8765 --enable-llm
 ```
+
+Windows PowerShell 中仍可使用 `$env:PACKWISE_LLM_* = "..."` 的变量写法。
+
+Backend 模型连通性检查：
+
+```bash
+PACKWISE_LLM_MODEL="deepseek-v4-pro" \
+PACKWISE_LLM_BASE_URL="https://<model-provider-host>/v1" \
+PACKWISE_LLM_API_KEY="<backend-side-secret>" \
+./scripts/dev model-check --pretty
+```
+
+该命令只在 backend 侧执行，默认同时检查 OpenAI-compatible `/v1/models`
+可达、包含 `PACKWISE_LLM_MODEL`，并发送一次 `max_tokens=1` 的最小 chat
+completion 以确认模型可实际调用。仅诊断模型列表端点时才使用
+`--skip-chat-smoke`。
 
 当前 HTTP endpoints：
 
@@ -144,4 +169,4 @@ segment percent-encoding。
 - `GET /v1/runtime-dumps/{dump_id}/index-summary`
 - `POST /v1/query/ask`
 
-DeepSeek/OpenAI-compatible client 已接入为可选 answer pipeline；默认不调用外部 API，避免测试时误触发付费请求。
+OpenAI-compatible client 已接入为可选 answer pipeline；默认不调用外部 API，避免测试时误触发付费请求。
