@@ -22,7 +22,7 @@ Environment defaults:
   PACKWISE_ATM9SKY_INSTANCE_DIR
   PACKWISE_ATM9SKY_SERVER_COMMAND
   PACKWISE_ATM9SKY_ITEM_ID
-  PACKWISE_AGENT_URL
+  PACKWISE_BACKEND_BASE_URL / PACKWISE_AGENT_BASE_URL / PACKWISE_AGENT_URL
 
 Options:
   --server-dir PATH       External ATM9Sky server directory. Defaults to a disposable evidence copy.
@@ -44,7 +44,7 @@ instance_path="${PACKWISE_ATM9SKY_INSTANCE_DIR:-}"
 server_command="${PACKWISE_ATM9SKY_SERVER_COMMAND:-}"
 artifact_root="${REPO_ROOT}/artifacts/atm9sky-headless"
 item_id="${PACKWISE_ATM9SKY_ITEM_ID:-minecraft:stone}"
-agent_url="${PACKWISE_AGENT_URL:-}"
+agent_url="${PACKWISE_BACKEND_BASE_URL:-${PACKWISE_AGENT_BASE_URL:-${PACKWISE_AGENT_URL:-}}}"
 skip_build=false
 in_place_server=false
 timeout_seconds=""

@@ -1923,7 +1923,7 @@ def _write_server_log(
             status_lines
             + [
                 f"[modloading-worker-0/INFO] Packwise connector loaded: mod_id=packwise_connector, version={loaded_connector_version}",
-                "[Server thread/INFO] Packwise: runtime dump written locally; upload skipped because PACKWISE_AGENT_URL is not configured",
+                "[Server thread/INFO] Packwise: runtime dump written locally; upload skipped because PACKWISE_BACKEND_BASE_URL/PACKWISE_AGENT_BASE_URL/PACKWISE_AGENT_URL is not configured",
                 f"[Server thread/INFO] mods=1, items=1, tags=1, recipes=1, connector_id={dump_connector_id}, dump_id={dump_id}, "
                 "optional_integrations=ftbquests=loaded|ftbteams=loaded|gamestages=loaded|kubejs=loaded, "
                 f"optional_sections=ftb_quests|player_progress, path={dump_dir}",

@@ -39,7 +39,10 @@ public final class ForgeRuntimeIdentity {
     }
 
     public static Optional<URI> agentBaseUri() {
-        String configured = value("packwise.agentUrl", "PACKWISE_AGENT_URL", "");
+        String configured = value(
+                "packwise.agentUrl",
+                List.of("PACKWISE_BACKEND_BASE_URL", "PACKWISE_AGENT_BASE_URL", "PACKWISE_AGENT_URL"),
+                "");
         if (configured.isBlank()) {
             return Optional.empty();
         }
@@ -88,13 +91,19 @@ public final class ForgeRuntimeIdentity {
     }
 
     private static String value(String property, String env, String fallback) {
+        return value(property, List.of(env), fallback);
+    }
+
+    private static String value(String property, List<String> envNames, String fallback) {
         String fromProperty = System.getProperty(property);
         if (fromProperty != null && !fromProperty.isBlank()) {
             return fromProperty;
         }
-        String fromEnv = System.getenv(env);
-        if (fromEnv != null && !fromEnv.isBlank()) {
-            return fromEnv;
+        for (String envName : envNames) {
+            String fromEnv = System.getenv(envName);
+            if (fromEnv != null && !fromEnv.isBlank()) {
+                return fromEnv;
+            }
         }
         return fallback;
     }

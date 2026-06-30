@@ -109,7 +109,7 @@ public final class PackwiseForgeCommands {
         if (agentUri.isEmpty()) {
             CommandResponse response = new CommandResponse(
                     false,
-                    "runtime dump written locally; upload skipped because PACKWISE_AGENT_URL is not configured",
+                    "runtime dump written locally; upload skipped because PACKWISE_BACKEND_BASE_URL/PACKWISE_AGENT_BASE_URL/PACKWISE_AGENT_URL is not configured",
                     details);
             sendAndLog(source, responseLines(response));
             return 1;
@@ -181,7 +181,7 @@ public final class PackwiseForgeCommands {
         if (agentUri.isEmpty()) {
             sendFailureAndLog(
                     source,
-                    "Packwise ask requires PACKWISE_AGENT_URL or -Dpackwise.agentUrl.",
+                    "Packwise ask requires PACKWISE_BACKEND_BASE_URL, PACKWISE_AGENT_BASE_URL, PACKWISE_AGENT_URL, or -Dpackwise.agentUrl.",
                     null);
             return 0;
         }

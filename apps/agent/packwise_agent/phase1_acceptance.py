@@ -104,7 +104,8 @@ CHECK_REMEDIATIONS = {
         "the dump output plus the matching dump id or local dump path."
     ),
     "online_agent_connector_status_seen": (
-        "If online upload is configured, verify PACKWISE_AGENT_URL points at the running agent, "
+        "If online upload is configured, verify PACKWISE_BACKEND_BASE_URL, PACKWISE_AGENT_BASE_URL, "
+        "or legacy PACKWISE_AGENT_URL points at the running Packwise backend, "
         "rerun /packwise dump, and pass --agent-url so the report can confirm the same "
         "connector id and dump id reached the agent, every declared section uploaded, and the "
         "scoped pack-index builds from the online runtime dump with no runtime consistency "
@@ -116,7 +117,8 @@ CHECK_REMEDIATIONS = {
         "source references. If online upload is not part of this run, omit --agent-url."
     ),
     "live_packwise_ask_sources_seen": (
-        "Optional live answer evidence: configure PACKWISE_AGENT_URL, run /packwise ask after a "
+        "Optional live answer evidence: configure PACKWISE_BACKEND_BASE_URL, PACKWISE_AGENT_BASE_URL, "
+        "or legacy PACKWISE_AGENT_URL, run /packwise ask after a "
         "successful uploaded dump, and keep the server log lines containing Sources: refs."
     ),
 }

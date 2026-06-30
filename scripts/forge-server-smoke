@@ -55,7 +55,7 @@ skip_build=false
 require_phase1=false
 instance_path=""
 item_id="minecraft:stone"
-agent_url="${PACKWISE_AGENT_URL:-}"
+agent_url="${PACKWISE_BACKEND_BASE_URL:-${PACKWISE_AGENT_BASE_URL:-${PACKWISE_AGENT_URL:-}}}"
 connector_id="forge-smoke-${MINECRAFT_VERSION}-${FORGE_VERSION}"
 pack_id="generic-forge-1201"
 pack_name="Packwise Forge Smoke"
@@ -551,7 +551,7 @@ mkfifo "${fifo}"
     PACKWISE_PACK_ID="${pack_id}" \
     PACKWISE_PACK_NAME="${pack_name}" \
     PACKWISE_PACK_VERSION="${pack_version}" \
-    PACKWISE_AGENT_URL="${agent_url}" \
+    PACKWISE_BACKEND_BASE_URL="${agent_url}" \
     bash -c "${server_command}" <"${fifo}"
 ) >"${console_log}" 2>&1 &
 server_pid=$!

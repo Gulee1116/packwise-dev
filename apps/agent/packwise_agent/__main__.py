@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .http_api import make_server
 from .local_workflow import LOCAL_ANSWER_SCHEMA_VERSION, ask_local
-from .llm import OpenAICompatibleChatClient
+from .llm import DEFAULT_LLM_MODEL, OpenAICompatibleChatClient
 from .phase1_acceptance import build_phase1_acceptance_report
 from .service import AgentService
 from .ftbquests import inspect_quest_book
@@ -54,13 +54,16 @@ def main(argv: list[str] | None = None) -> None:
     if argv and argv[0] == "phase1-acceptance":
         _run_phase1_acceptance(argv[1:])
         return
+    if argv and argv[0] == "model-check":
+        _run_model_check(argv[1:])
+        return
     if argv and argv[0] == "serve":
         argv = argv[1:]
 
     parser = argparse.ArgumentParser(description="Run the Packwise lightweight agent service.")
     parser.add_argument("--host", default=os.environ.get("PACKWISE_AGENT_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("PACKWISE_AGENT_PORT", "8765")))
-    parser.add_argument("--model", default=os.environ.get("PACKWISE_LLM_MODEL", "deepseek-v4-pro"))
+    parser.add_argument("--model", default=os.environ.get("PACKWISE_LLM_MODEL", DEFAULT_LLM_MODEL))
     parser.add_argument("--enable-llm", action="store_true", help="Call the configured OpenAI-compatible LLM provider.")
     parser.add_argument(
         "--import-dump",
@@ -346,6 +349,39 @@ def _run_phase1_acceptance(argv: list[str]) -> None:
             handle.write("\n")
     else:
         print(text)
+    if not report.get("valid"):
+        raise SystemExit(1)
+
+
+def _run_model_check(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(description="Check backend OpenAI-compatible model configuration.")
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("PACKWISE_LLM_BASE_URL"),
+        help="OpenAI-compatible base URL. May include /v1. Defaults to PACKWISE_LLM_BASE_URL.",
+    )
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("PACKWISE_LLM_MODEL", DEFAULT_LLM_MODEL),
+        help="Model ID expected in /v1/models.",
+    )
+    parser.add_argument("--timeout", type=int, default=30, help="HTTP timeout in seconds.")
+    parser.add_argument(
+        "--skip-chat-smoke",
+        action="store_true",
+        help="Only check /v1/models and skip the default minimal chat completion usability request.",
+    )
+    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON.")
+    args = parser.parse_args(argv)
+
+    client = OpenAICompatibleChatClient(
+        base_url=args.base_url,
+        model=args.model,
+        timeout_seconds=args.timeout,
+    )
+    report = client.check_model(require_chat_smoke=not args.skip_chat_smoke)
+    indent = 2 if args.pretty else None
+    print(json.dumps(report, ensure_ascii=False, indent=indent))
     if not report.get("valid"):
         raise SystemExit(1)
 

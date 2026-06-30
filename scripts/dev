@@ -25,11 +25,15 @@ Commands:
   atm9sky-client-server
                       Run the external ATM9Sky client/server smoke lane.
   agent-http-e2e      Run a local agent HTTP integration lane.
+  serve               Run the lightweight agent service.
+  inspect             Inspect an installed modpack instance without starting Minecraft.
+  inspect-quests      Inspect an installed FTB Quests book without starting Minecraft.
   validate-dump       Validate a local runtime dump directory.
   import-dump         Validate and import a local runtime dump through AgentService.
   build-index         Build a normalized Packwise index from an installed instance.
   ask-local           Answer from a local instance and runtime dump.
   phase1-acceptance   Run the ATM9Sky Phase 1 acceptance report.
+  model-check         Check backend OpenAI-compatible /v1/models and chat completion usability.
 USAGE
 }
 
@@ -231,6 +235,30 @@ cmd_phase1_acceptance() {
   python -m packwise_agent phase1-acceptance "$@"
 }
 
+cmd_model_check() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent model-check "$@"
+}
+
+cmd_serve() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent serve "$@"
+}
+
+cmd_inspect() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent inspect "$@"
+}
+
+cmd_inspect_quests() {
+  assert_local_env
+  cd "${REPO_ROOT}"
+  python -m packwise_agent inspect-quests "$@"
+}
+
 cmd_import_dump() {
   assert_local_env
   cd "${REPO_ROOT}"
@@ -324,6 +352,18 @@ case "${command}" in
     shift
     cmd_agent_http_e2e "$@"
     ;;
+  serve)
+    shift
+    cmd_serve "$@"
+    ;;
+  inspect)
+    shift
+    cmd_inspect "$@"
+    ;;
+  inspect-quests)
+    shift
+    cmd_inspect_quests "$@"
+    ;;
   import-dump)
     shift
     cmd_import_dump "$@"
@@ -343,6 +383,10 @@ case "${command}" in
   phase1-acceptance)
     shift
     cmd_phase1_acceptance "$@"
+    ;;
+  model-check)
+    shift
+    cmd_model_check "$@"
     ;;
   ""|-h|--help|help)
     usage
