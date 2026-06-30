@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Mapping, Optional
 
 
@@ -37,6 +37,9 @@ class RuntimeRegistryEntry:
     namespace: str
     path: str
     source: str
+    translation_key: Optional[str]
+    display_name: Optional[str]
+    translated_name: Optional[str]
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "RuntimeRegistryEntry":
@@ -48,16 +51,26 @@ class RuntimeRegistryEntry:
             namespace=_optional_str(payload, "namespace") or namespace,
             path=_optional_str(payload, "path") or path or item_id,
             source=_optional_str(payload, "source") or "runtime",
+            translation_key=_optional_str(payload, "translation_key"),
+            display_name=_optional_str(payload, "display_name"),
+            translated_name=_optional_str(payload, "translated_name"),
         )
 
     def to_dict(self) -> Dict[str, str]:
-        return {
+        payload = {
             "id": self.id,
             "registry": self.registry,
             "namespace": self.namespace,
             "path": self.path,
             "source": self.source,
         }
+        if self.translation_key:
+            payload["translation_key"] = self.translation_key
+        if self.display_name:
+            payload["display_name"] = self.display_name
+        if self.translated_name:
+            payload["translated_name"] = self.translated_name
+        return payload
 
 
 @dataclass(frozen=True)
@@ -106,7 +119,14 @@ class RuntimeRecipe:
     result_item: Optional[str]
     result_count: int
     ingredient_items: List[str]
+    ingredient_slots: List[Dict[str, Any]]
     source: str
+    width: Optional[int]
+    height: Optional[int]
+    pattern: List[str]
+    raw_recipe: Optional[Dict[str, Any]]
+    result_nbt: Optional[str]
+    result_display_name: Optional[str]
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "RuntimeRecipe":
@@ -121,11 +141,18 @@ class RuntimeRecipe:
             result_item=result_item or None,
             result_count=result_count,
             ingredient_items=_optional_str_list(payload, "ingredient_items"),
+            ingredient_slots=_optional_object_list(payload, "ingredient_slots"),
             source=_optional_str(payload, "source") or "runtime",
+            width=_optional_non_negative_int(payload, "width"),
+            height=_optional_non_negative_int(payload, "height"),
+            pattern=_optional_str_list(payload, "pattern"),
+            raw_recipe=_optional_mapping(payload, "raw_recipe"),
+            result_nbt=_optional_str(payload, "result_nbt"),
+            result_display_name=_optional_str(payload, "result_display_name"),
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "id": self.id,
             "type": self.type,
             "serializer": self.serializer,
@@ -134,6 +161,155 @@ class RuntimeRecipe:
             "ingredient_items": list(self.ingredient_items),
             "source": self.source,
         }
+        if self.ingredient_slots:
+            payload["ingredient_slots"] = [dict(slot) for slot in self.ingredient_slots]
+        if self.width is not None:
+            payload["width"] = self.width
+        if self.height is not None:
+            payload["height"] = self.height
+        if self.pattern:
+            payload["pattern"] = list(self.pattern)
+        if self.raw_recipe is not None:
+            payload["raw_recipe"] = dict(self.raw_recipe)
+        if self.result_nbt:
+            payload["result_nbt"] = self.result_nbt
+        if self.result_display_name:
+            payload["result_display_name"] = self.result_display_name
+        return payload
+
+
+@dataclass(frozen=True)
+class RuntimePotionEffect:
+    effect_id: str
+    duration: int
+    amplifier: int
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "RuntimePotionEffect":
+        duration = payload.get("duration", 0)
+        amplifier = payload.get("amplifier", 0)
+        if not isinstance(duration, int):
+            raise ValueError("duration must be an integer")
+        if not isinstance(amplifier, int) or amplifier < 0:
+            raise ValueError("amplifier must be a non-negative integer")
+        return cls(
+            effect_id=_optional_str(payload, "effect_id") or _require_str(payload, "id"),
+            duration=duration,
+            amplifier=amplifier,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "effect_id": self.effect_id,
+            "duration": self.duration,
+            "amplifier": self.amplifier,
+        }
+
+
+@dataclass(frozen=True)
+class RuntimePotion:
+    id: str
+    display_name: Optional[str]
+    translation_key: Optional[str]
+    effects: List[RuntimePotionEffect]
+    source: str
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "RuntimePotion":
+        return cls(
+            id=_require_str(payload, "id"),
+            display_name=_optional_str(payload, "display_name"),
+            translation_key=_optional_str(payload, "translation_key"),
+            effects=[
+                RuntimePotionEffect.from_dict(effect)
+                for effect in _optional_object_list(payload, "effects")
+            ],
+            source=_optional_str(payload, "source") or "runtime",
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "id": self.id,
+            "effects": [effect.to_dict() for effect in self.effects],
+            "source": self.source,
+        }
+        if self.display_name:
+            payload["display_name"] = self.display_name
+        if self.translation_key:
+            payload["translation_key"] = self.translation_key
+        return payload
+
+
+@dataclass(frozen=True)
+class RuntimeEffectAttributeModifier:
+    attribute_id: str
+    amount: float
+    operation: str
+    name: Optional[str]
+    uuid: Optional[str]
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "RuntimeEffectAttributeModifier":
+        amount = payload.get("amount", 0.0)
+        if not isinstance(amount, (int, float)):
+            raise ValueError("amount must be a number")
+        return cls(
+            attribute_id=_optional_str(payload, "attribute_id") or _require_str(payload, "attribute"),
+            amount=float(amount),
+            operation=_optional_str(payload, "operation") or "unknown",
+            name=_optional_str(payload, "name"),
+            uuid=_optional_str(payload, "uuid"),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "attribute_id": self.attribute_id,
+            "amount": self.amount,
+            "operation": self.operation,
+        }
+        if self.name:
+            payload["name"] = self.name
+        if self.uuid:
+            payload["uuid"] = self.uuid
+        return payload
+
+
+@dataclass(frozen=True)
+class RuntimeMobEffect:
+    id: str
+    display_name: Optional[str]
+    translation_key: Optional[str]
+    description: Optional[str]
+    attribute_modifiers: List[RuntimeEffectAttributeModifier]
+    source: str
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "RuntimeMobEffect":
+        return cls(
+            id=_require_str(payload, "id"),
+            display_name=_optional_str(payload, "display_name"),
+            translation_key=_optional_str(payload, "translation_key"),
+            description=_optional_str(payload, "description"),
+            attribute_modifiers=[
+                RuntimeEffectAttributeModifier.from_dict(modifier)
+                for modifier in _optional_object_list(payload, "attribute_modifiers")
+            ],
+            source=_optional_str(payload, "source") or "runtime",
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "id": self.id,
+            "attribute_modifiers": [modifier.to_dict() for modifier in self.attribute_modifiers],
+            "source": self.source,
+        }
+        if self.display_name:
+            payload["display_name"] = self.display_name
+        if self.translation_key:
+            payload["translation_key"] = self.translation_key
+        if self.description:
+            payload["description"] = self.description
+        return payload
 
 
 @dataclass(frozen=True)
@@ -293,6 +469,8 @@ class RuntimePackIndex:
     fluids: List[RuntimeRegistryEntry]
     tags: List[RuntimeTag]
     recipes: List[RuntimeRecipe]
+    potions: List[RuntimePotion]
+    mob_effects: List[RuntimeMobEffect]
     advancements: List[RuntimeAdvancement]
     ftb_quests: List[RuntimeQuest]
     player_progress: List[RuntimeProgress]
@@ -308,6 +486,8 @@ class RuntimePackIndex:
             fluids=[],
             tags=[],
             recipes=[],
+            potions=[],
+            mob_effects=[],
             advancements=[],
             ftb_quests=[],
             player_progress=[],
@@ -317,27 +497,31 @@ class RuntimePackIndex:
 
     def with_section(self, section_name: str, body: str) -> "RuntimePackIndex":
         if section_name == "mods":
-            return RuntimePackIndex(parse_mods_ndjson(body), self.items, self.blocks, self.fluids, self.tags, self.recipes, self.advancements, self.ftb_quests, self.player_progress, self.team_progress, self.stages)
+            return replace(self, mods=parse_mods_ndjson(body))
         if section_name == "items":
-            return RuntimePackIndex(self.mods, parse_registry_entries_ndjson(body), self.blocks, self.fluids, self.tags, self.recipes, self.advancements, self.ftb_quests, self.player_progress, self.team_progress, self.stages)
+            return replace(self, items=parse_registry_entries_ndjson(body))
         if section_name == "blocks":
-            return RuntimePackIndex(self.mods, self.items, parse_registry_entries_ndjson(body), self.fluids, self.tags, self.recipes, self.advancements, self.ftb_quests, self.player_progress, self.team_progress, self.stages)
+            return replace(self, blocks=parse_registry_entries_ndjson(body))
         if section_name == "fluids":
-            return RuntimePackIndex(self.mods, self.items, self.blocks, parse_registry_entries_ndjson(body), self.tags, self.recipes, self.advancements, self.ftb_quests, self.player_progress, self.team_progress, self.stages)
+            return replace(self, fluids=parse_registry_entries_ndjson(body))
         if section_name == "tags":
-            return RuntimePackIndex(self.mods, self.items, self.blocks, self.fluids, parse_tags_ndjson(body), self.recipes, self.advancements, self.ftb_quests, self.player_progress, self.team_progress, self.stages)
+            return replace(self, tags=parse_tags_ndjson(body))
         if section_name == "recipes":
-            return RuntimePackIndex(self.mods, self.items, self.blocks, self.fluids, self.tags, parse_recipes_ndjson(body), self.advancements, self.ftb_quests, self.player_progress, self.team_progress, self.stages)
+            return replace(self, recipes=parse_recipes_ndjson(body))
+        if section_name == "potions":
+            return replace(self, potions=parse_potions_ndjson(body))
+        if section_name == "mob_effects":
+            return replace(self, mob_effects=parse_mob_effects_ndjson(body))
         if section_name == "advancements":
-            return RuntimePackIndex(self.mods, self.items, self.blocks, self.fluids, self.tags, self.recipes, parse_advancements_ndjson(body), self.ftb_quests, self.player_progress, self.team_progress, self.stages)
+            return replace(self, advancements=parse_advancements_ndjson(body))
         if section_name == "ftb_quests":
-            return RuntimePackIndex(self.mods, self.items, self.blocks, self.fluids, self.tags, self.recipes, self.advancements, parse_ftb_quests_ndjson(body), self.player_progress, self.team_progress, self.stages)
+            return replace(self, ftb_quests=parse_ftb_quests_ndjson(body))
         if section_name == "player_progress":
-            return RuntimePackIndex(self.mods, self.items, self.blocks, self.fluids, self.tags, self.recipes, self.advancements, self.ftb_quests, parse_progress_ndjson(body, "player_progress"), self.team_progress, self.stages)
+            return replace(self, player_progress=parse_progress_ndjson(body, "player_progress"))
         if section_name == "team_progress":
-            return RuntimePackIndex(self.mods, self.items, self.blocks, self.fluids, self.tags, self.recipes, self.advancements, self.ftb_quests, self.player_progress, parse_progress_ndjson(body, "team_progress"), self.stages)
+            return replace(self, team_progress=parse_progress_ndjson(body, "team_progress"))
         if section_name == "stages":
-            return RuntimePackIndex(self.mods, self.items, self.blocks, self.fluids, self.tags, self.recipes, self.advancements, self.ftb_quests, self.player_progress, self.team_progress, parse_stages_ndjson(body))
+            return replace(self, stages=parse_stages_ndjson(body))
         return self
 
     def summary(self) -> Dict[str, int]:
@@ -348,6 +532,8 @@ class RuntimePackIndex:
             "fluids": len(self.fluids),
             "tags": len(self.tags),
             "recipes": len(self.recipes),
+            "potions": len(self.potions),
+            "mob_effects": len(self.mob_effects),
             "advancements": len(self.advancements),
             "ftb_quests": len(self.ftb_quests),
             "player_progress": len(self.player_progress),
@@ -374,6 +560,16 @@ def parse_tags_ndjson(body: str) -> List[RuntimeTag]:
 def parse_recipes_ndjson(body: str) -> List[RuntimeRecipe]:
     recipes = [RuntimeRecipe.from_dict(payload) for payload in _parse_ndjson_objects(body, "recipes")]
     return sorted(recipes, key=lambda recipe: recipe.id)
+
+
+def parse_potions_ndjson(body: str) -> List[RuntimePotion]:
+    potions = [RuntimePotion.from_dict(payload) for payload in _parse_ndjson_objects(body, "potions")]
+    return sorted(potions, key=lambda potion: potion.id)
+
+
+def parse_mob_effects_ndjson(body: str) -> List[RuntimeMobEffect]:
+    effects = [RuntimeMobEffect.from_dict(payload) for payload in _parse_ndjson_objects(body, "mob_effects")]
+    return sorted(effects, key=lambda effect: effect.id)
 
 
 def parse_advancements_ndjson(body: str) -> List[RuntimeAdvancement]:
@@ -405,6 +601,8 @@ def runtime_consistency_errors(runtime_index: RuntimePackIndex) -> List[str]:
     errors.extend(_duplicate_value_errors("blocks", [entry.id for entry in runtime_index.blocks]))
     errors.extend(_duplicate_value_errors("fluids", [entry.id for entry in runtime_index.fluids]))
     errors.extend(_duplicate_value_errors("recipes", [recipe.id for recipe in runtime_index.recipes]))
+    errors.extend(_duplicate_value_errors("potions", [potion.id for potion in runtime_index.potions]))
+    errors.extend(_duplicate_value_errors("mob_effects", [effect.id for effect in runtime_index.mob_effects]))
     errors.extend(_duplicate_value_errors("advancements", [advancement.id for advancement in runtime_index.advancements]))
     errors.extend(_duplicate_value_errors("tags", [f"{tag.registry}:{tag.tag}" for tag in runtime_index.tags]))
     errors.extend(_duplicate_value_errors("ftb_quests", [quest.quest_id for quest in runtime_index.ftb_quests]))
@@ -451,6 +649,18 @@ def runtime_consistency_errors(runtime_index: RuntimePackIndex) -> List[str]:
         )
         if missing_quest_reward_items:
             errors.append("FTB quest reward items missing from items registry: " + ", ".join(missing_quest_reward_items[:20]))
+    effect_ids = {effect.id for effect in runtime_index.mob_effects}
+    if effect_ids:
+        missing_potion_effects = sorted(
+            {
+                potion_effect.effect_id
+                for potion in runtime_index.potions
+                for potion_effect in potion.effects
+                if potion_effect.effect_id not in effect_ids
+            }
+        )
+        if missing_potion_effects:
+            errors.append("Potion effects missing from mob_effects: " + ", ".join(missing_potion_effects[:20]))
     quest_ids = {quest.quest_id for quest in runtime_index.ftb_quests}
     if quest_ids:
         missing_dependencies = sorted(
@@ -577,6 +787,33 @@ def _optional_str_dict(payload: Mapping[str, Any], key: str) -> Dict[str, str]:
     ):
         raise ValueError(f"{key} must be a string dictionary")
     return dict(value)
+
+
+def _optional_mapping(payload: Mapping[str, Any], key: str) -> Dict[str, Any] | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{key} must be an object")
+    return dict(value)
+
+
+def _optional_object_list(payload: Mapping[str, Any], key: str) -> List[Dict[str, Any]]:
+    value = payload.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, Mapping) for item in value):
+        raise ValueError(f"{key} must be an object list")
+    return [dict(item) for item in value]
+
+
+def _optional_non_negative_int(payload: Mapping[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, int) or value < 0:
+        raise ValueError(f"{key} must be a non-negative integer")
+    return value
 
 
 def _duplicate_value_errors(section_name: str, values: List[str]) -> List[str]:

@@ -4,6 +4,8 @@ from packwise_agent.runtime_index import (
     RuntimePackIndex,
     parse_advancements_ndjson,
     parse_ftb_quests_ndjson,
+    parse_mob_effects_ndjson,
+    parse_potions_ndjson,
     parse_progress_ndjson,
     parse_recipes_ndjson,
     parse_registry_entries_ndjson,
@@ -22,7 +24,13 @@ class RuntimeIndexTest(unittest.TestCase):
             '{"registry":"item","tag":"forge:stone","entry_count":1,"entries":["minecraft:stone"],"source":"runtime"}\n'
         )
         recipes = parse_recipes_ndjson(
-            '{"id":"minecraft:stonecutting/stone","type":"minecraft:stonecutting","serializer":"minecraft:stonecutting","result_item":"minecraft:stone","result_count":1,"ingredient_items":["minecraft:cobblestone"],"source":"runtime"}\n'
+            '{"id":"minecraft:stonecutting/stone","type":"minecraft:stonecutting","serializer":"minecraft:stonecutting","result_item":"minecraft:stone","result_count":1,"ingredient_items":["minecraft:cobblestone"],"ingredient_slots":[{"slot":0,"empty":false,"item_ids":["minecraft:cobblestone"],"candidates":[{"item_id":"minecraft:cobblestone","count":1}]}],"source":"runtime"}\n'
+        )
+        potions = parse_potions_ndjson(
+            '{"id":"apotheosis:flying","translation_key":"item.minecraft.potion.effect.flying","effects":[{"effect_id":"attributeslib:flying","duration":3600,"amplifier":0}],"source":"runtime:potion_registry"}\n'
+        )
+        mob_effects = parse_mob_effects_ndjson(
+            '{"id":"attributeslib:flying","translation_key":"effect.attributeslib.flying","attribute_modifiers":[{"attribute_id":"attributeslib:creative_flight","amount":1.0,"operation":"ADDITION"}],"source":"runtime:mob_effect_registry"}\n'
         )
         advancements = parse_advancements_ndjson(
             '{"id":"minecraft:story/mine_stone","source":"runtime"}\n'
@@ -32,6 +40,10 @@ class RuntimeIndexTest(unittest.TestCase):
         self.assertEqual("forge:stone", tags[0].tag)
         self.assertEqual("minecraft:stone", recipes[0].result_item)
         self.assertEqual(["minecraft:cobblestone"], recipes[0].ingredient_items)
+        self.assertEqual("minecraft:cobblestone", recipes[0].ingredient_slots[0]["item_ids"][0])
+        self.assertEqual("apotheosis:flying", potions[0].id)
+        self.assertEqual("attributeslib:flying", potions[0].effects[0].effect_id)
+        self.assertEqual("attributeslib:creative_flight", mob_effects[0].attribute_modifiers[0].attribute_id)
         self.assertEqual("minecraft:story/mine_stone", advancements[0].id)
 
     def test_parses_optional_progression_runtime_sections(self):
@@ -77,9 +89,19 @@ class RuntimeIndexTest(unittest.TestCase):
             "recipes",
             '{"id":"minecraft:stone","type":"minecraft:crafting","serializer":"minecraft:crafting_shaped","result_item":"minecraft:stone","result_count":1,"source":"runtime"}\n',
         )
+        index = index.with_section(
+            "potions",
+            '{"id":"apotheosis:flying","effects":[{"effect_id":"attributeslib:flying","duration":3600,"amplifier":0}],"source":"runtime:potion_registry"}\n',
+        )
+        index = index.with_section(
+            "mob_effects",
+            '{"id":"attributeslib:flying","attribute_modifiers":[{"attribute_id":"attributeslib:creative_flight","amount":1.0,"operation":"ADDITION"}],"source":"runtime:mob_effect_registry"}\n',
+        )
 
         self.assertEqual(1, index.summary()["items"])
         self.assertEqual(1, index.summary()["recipes"])
+        self.assertEqual(1, index.summary()["potions"])
+        self.assertEqual(1, index.summary()["mob_effects"])
         self.assertEqual(0, index.summary()["ftb_quests"])
 
     def test_runtime_consistency_errors_cover_optional_progression_sections(self):

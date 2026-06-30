@@ -7,6 +7,8 @@ public final class RuntimeSectionNames {
     public static final String FLUIDS = "fluids";
     public static final String TAGS = "tags";
     public static final String RECIPES = "recipes";
+    public static final String POTIONS = "potions";
+    public static final String MOB_EFFECTS = "mob_effects";
     public static final String ADVANCEMENTS = "advancements";
     public static final String FTB_QUESTS = "ftb_quests";
     public static final String PLAYER_PROGRESS = "player_progress";
@@ -19,7 +21,7 @@ public final class RuntimeSectionNames {
     public static boolean isStandard(String sectionName) {
         return switch (sectionName) {
             case MODS, ITEMS, BLOCKS, FLUIDS, TAGS, RECIPES, ADVANCEMENTS,
-                    FTB_QUESTS, PLAYER_PROGRESS, TEAM_PROGRESS, STAGES -> true;
+                    POTIONS, MOB_EFFECTS, FTB_QUESTS, PLAYER_PROGRESS, TEAM_PROGRESS, STAGES -> true;
             default -> false;
         };
     }

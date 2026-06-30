@@ -12,8 +12,10 @@ from .static_inspector import inspect_instance
 
 INDEX_SCHEMA_VERSION = "packwise.index.v1"
 PHASE1_RUNTIME_SECTIONS = ("mods", "items", "blocks", "fluids", "tags", "recipes", "advancements")
+POTION_EFFECT_RUNTIME_SECTIONS = ("potions", "mob_effects")
 OPTIONAL_RUNTIME_SECTIONS = ("ftb_quests", "player_progress", "team_progress", "stages")
-RUNTIME_SECTIONS = PHASE1_RUNTIME_SECTIONS + OPTIONAL_RUNTIME_SECTIONS
+SEMANTIC_RUNTIME_SECTIONS = POTION_EFFECT_RUNTIME_SECTIONS + OPTIONAL_RUNTIME_SECTIONS
+RUNTIME_SECTIONS = PHASE1_RUNTIME_SECTIONS + SEMANTIC_RUNTIME_SECTIONS
 
 
 @dataclass(frozen=True)
@@ -114,6 +116,8 @@ def _reconciliation(runtime_summary: Mapping[str, int], quest_summary: Optional[
         "registries": "runtime_authoritative" if _registries_ready(runtime_summary) else "missing_runtime",
         "tags": "runtime_authoritative" if runtime_summary.get("tags", 0) else "missing_runtime",
         "recipes": "runtime_authoritative" if runtime_summary.get("recipes", 0) else "missing_runtime",
+        "potions": "runtime_authoritative" if runtime_summary.get("potions", 0) else "missing_runtime",
+        "mob_effects": "runtime_authoritative" if runtime_summary.get("mob_effects", 0) else "missing_runtime",
         "advancements": "runtime_authoritative" if runtime_summary.get("advancements", 0) else "missing_runtime",
         "quests": _quest_reconciliation(runtime_summary, quest_summary),
         "player_progress": "runtime_authoritative" if runtime_summary.get("player_progress", 0) else "missing_runtime",
@@ -130,6 +134,9 @@ def _answer_readiness(runtime_summary: Mapping[str, int], quest_summary: Optiona
     return {
         "recipe_questions": runtime_summary.get("recipes", 0) > 0 and runtime_summary.get("items", 0) > 0,
         "jei_difference_questions": runtime_summary.get("recipes", 0) > 0 and runtime_summary.get("tags", 0) > 0,
+        "effect_route_questions": all(
+            runtime_summary.get(name, 0) > 0 for name in ("recipes", "potions", "mob_effects")
+        ),
         "next_step_questions": _progression_readiness(runtime_summary, quest_summary),
         "unlock_questions": _unlock_readiness(runtime_summary, quest_summary),
         "blocker_questions": "partial" if _has_progress_state(runtime_summary) else "needs_player_team_progress",
